@@ -182,7 +182,7 @@ const TrashIcon = () => (
 
 // ── Message bubble ────────────────────────────────────────────────────────────
 
-const MessageBubble = ({ msg }) => {
+const MessageBubble = ({ msg, canRedo = false, onRedo }) => {
     const isPlayer = msg.role === "user";
     const isError  = msg.role === "error";
     const flag     = useCountryFlag(isPlayer || isError ? {} : { code: msg.code, name: msg.speaker });
@@ -254,6 +254,16 @@ const MessageBubble = ({ msg }) => {
         }}>
         {isPlayer ? msg.text : <div className="chat-markdown"><ReactMarkdown>{msg.text}</ReactMarkdown></div>}
         </div>
+
+        {isPlayer && onRedo && (
+            <button
+            type="button"
+            disabled={!canRedo}
+            onClick={onRedo}
+            title={canRedo ? "Edit this message and replace everything after it" : "Wait for the current reply to finish"}
+            style={{ background: "none", border: "none", color: canRedo ? "rgba(191,219,254,0.72)" : "rgba(255,255,255,0.22)", cursor: canRedo ? "pointer" : "not-allowed", display: "block", fontFamily: "sans-serif", fontSize: "0.68rem", marginLeft: "auto", marginTop: "0.28rem", padding: "0.1rem 0.15rem" }}
+            >↻ Redo</button>
+        )}
 
         {!isPlayer && msg.time && (
             <span style={{ fontSize: "0.65rem", color: "rgba(255,255,255,0.3)", marginTop: "0.25rem", display: "block" }}>
@@ -445,7 +455,7 @@ const CountrySelectorModal = ({ countries, linkedEvent, loading, onStart, onCanc
 
 // ── Conversation view ─────────────────────────────────────────────────────────
 
-const ConversationView = ({ chat, playerCountry, gameDate, linkedEvent, onDelete, onBack, onLinkedEventConsumed, onMessagesUpdate }) => {
+const ConversationView = ({ chat, playerCountry, gameDate, linkedEvent, replyState, onDelete, onBack, onLinkedEventConsumed, onMessagesUpdate, onReplyStateChange }) => {
     // Two-step delete, matching the list row. Disarms on blur so a half-pressed
     // delete never sits waiting to catch a later click.
     const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -459,17 +469,19 @@ const ConversationView = ({ chat, playerCountry, gameDate, linkedEvent, onDelete
 
     const [messages, setMessages]               = useState(chat.messages ?? []);
     const [phase, setPhase]                     = useState("player");
-    const [isLoading, setIsLoading]             = useState(false);
     const [playerInput, setPlayerInput]         = useState("");
     const [pendingCountry, setPendingCountry]   = useState(null);
     const [remainingQueue, setRemainingQueue]   = useState([]);
-    const [speakingCountry, setSpeakingCountry] = useState(null);
+    const [editingMessageIndex, setEditingMessageIndex] = useState(null);
+    const isLoading = Boolean(replyState?.isLoading);
+    const speakingCountry = replyState?.speakingCountry ?? null;
 
     const nextSpeakerIdx    = useRef(0);
     const lastPlayerMessage = useRef("");
     const lastPlayerEvent   = useRef(null);
     const messagesEndRef    = useRef(null);
     const messagesRef       = useRef(chat.messages ?? []);
+    const activeChatIdRef   = useRef(chat.id);
 
     useEffect(() => {
         countries.forEach(({ name, code }) => getCountryFlag({ code, name }));
@@ -477,18 +489,37 @@ const ConversationView = ({ chat, playerCountry, gameDate, linkedEvent, onDelete
 
     useEffect(() => {
         const saved = chat.messages ?? [];
+        activeChatIdRef.current = chat.id;
+        messagesRef.current = saved;
+        setMessages(saved);
+        setPhase("player");
+        setPlayerInput("");
+        setPendingCountry(null);
+        setRemainingQueue([]);
+        setEditingMessageIndex(null);
         if (saved.length > 0) loadDiplomaticHistory(saved);
         else startDiplomaticChat();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [chat.id]);
+
+        // A reply may finish after this conversation was closed. The parent owns
+        // the saved transcript, so reopening the chat must adopt its newer copy.
+        useEffect(() => {
+            const incoming = chat.messages ?? [];
+            if (incoming.length <= messagesRef.current.length) return;
+            messagesRef.current = incoming;
+            setMessages(incoming);
+        }, [chat.messages]);
 
         useEffect(() => {
             messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
         }, [messages, isLoading, phase]);
 
         const pushMessages = (updated) => {
-            messagesRef.current = updated;
-            setMessages(updated);
+            if (activeChatIdRef.current === chat.id) {
+                messagesRef.current = updated;
+                setMessages(updated);
+            }
             onMessagesUpdate(chat.id, updated);
         };
 
@@ -501,8 +532,7 @@ const ConversationView = ({ chat, playerCountry, gameDate, linkedEvent, onDelete
                 setPhase("player");
                 return;
             }
-            setIsLoading(true);
-            setSpeakingCountry(country);
+            onReplyStateChange(chat.id, { isLoading: true, speakingCountry: country });
             try {
                 const { reply, reaction } = await sendDiplomaticMessage(playerMessage, country.name, countries, { linkedEvent: messageEvent });
 
@@ -524,8 +554,7 @@ const ConversationView = ({ chat, playerCountry, gameDate, linkedEvent, onDelete
             } catch (err) {
                 pushMessages([...messagesRef.current, { role: "error", speaker: country.name, code: country.code, text: err.message, time: gameDate }]);
             } finally {
-                setIsLoading(false);
-                setSpeakingCountry(null);
+                onReplyStateChange(chat.id, null);
             }
             if (queueAfter.length > 0) {
                 offerNextCountry(queueAfter);
@@ -595,17 +624,31 @@ const ConversationView = ({ chat, playerCountry, gameDate, linkedEvent, onDelete
             const text = playerInput.trim();
             if (!text || isLoading) return;
             lastPlayerMessage.current = text;
-            lastPlayerEvent.current = linkedEvent;
-            const eventLink = linkedEvent ? {
-                linkedEventDate: linkedEvent.date || "",
-                linkedEventDescription: linkedEvent.description || "",
-                linkedEventId: linkedEvent.id || "",
-                linkedEventTitle: linkedEvent.title || "",
+            const editedMessage = editingMessageIndex === null ? null : messagesRef.current[editingMessageIndex];
+            const messageEvent = editedMessage
+                ? (editedMessage.linkedEventTitle ? {
+                    date: editedMessage.linkedEventDate || "",
+                    description: editedMessage.linkedEventDescription || "",
+                    id: editedMessage.linkedEventId || "",
+                    title: editedMessage.linkedEventTitle,
+                } : null)
+                : linkedEvent;
+            lastPlayerEvent.current = messageEvent;
+            const eventLink = messageEvent ? {
+                linkedEventDate: messageEvent.date || "",
+                linkedEventDescription: messageEvent.description || "",
+                linkedEventId: messageEvent.id || "",
+                linkedEventTitle: messageEvent.title || "",
             } : {};
-            const nextMessages = [...messagesRef.current, { role: "user", speaker: playerCountry, text, time: gameDate, ...eventLink }];
+            const revisedMessage = { role: "user", speaker: playerCountry, text, time: gameDate, ...eventLink };
+            const nextMessages = editingMessageIndex === null
+                ? [...messagesRef.current, revisedMessage]
+                : [...messagesRef.current.slice(0, editingMessageIndex), revisedMessage];
             pushMessages(nextMessages);
+            if (editingMessageIndex !== null) loadDiplomaticHistory(nextMessages);
             setPlayerInput("");
-            onLinkedEventConsumed?.();
+            setEditingMessageIndex(null);
+            if (!editedMessage) onLinkedEventConsumed?.();
             const queue = await buildResponsiveQueue(nextMessages);
             if (queue.length === 0) {
                 pushMessages([...nextMessages, { role: "error", speaker: "System", text: "This chat has no valid participants.", time: gameDate }]);
@@ -614,8 +657,19 @@ const ConversationView = ({ chat, playerCountry, gameDate, linkedEvent, onDelete
             if (isGroup) {
                 offerNextCountry(queue);
             } else {
-                await fetchLeaderResponse(queue[0], text, [], linkedEvent);
+                await fetchLeaderResponse(queue[0], text, [], messageEvent);
             }
+        };
+
+        const handleRedo = (messageIndex) => {
+            if (isLoading) return;
+            const message = messagesRef.current[messageIndex];
+            if (message?.role !== "user") return;
+            setEditingMessageIndex(messageIndex);
+            setPlayerInput(message.text || "");
+            setPendingCountry(null);
+            setRemainingQueue([]);
+            setPhase("player");
         };
 
         const handleSpeakInstead = () => {
@@ -666,7 +720,7 @@ const ConversationView = ({ chat, playerCountry, gameDate, linkedEvent, onDelete
                 Begin the diplomatic conversation.
                 </p>
             )}
-            {messages.map((msg, i) => <MessageBubble key={i} msg={msg} chatCountries={countries} />)}
+            {messages.map((msg, i) => <MessageBubble key={i} msg={msg} canRedo={!isLoading} onRedo={msg.role === "user" ? () => handleRedo(i) : undefined} />)}
             {isLoading && typingSpeaker && <TypingBubble speaker={typingSpeaker.name} code={typingSpeaker.code} />}
             <div ref={messagesEndRef} />
             </div>
@@ -693,7 +747,13 @@ const ConversationView = ({ chat, playerCountry, gameDate, linkedEvent, onDelete
                 </div>
             ) : phase === "player" && !isLoading ? (
                 <div style={{ padding: "0.75rem 1rem 1rem", borderTop: "1px solid rgba(255,255,255,0.1)", display: "flex", flexDirection: "column", gap: "0.5rem", flexShrink: 0 }}>
-                {linkedEvent && (
+                {editingMessageIndex !== null && (
+                    <div style={{ alignItems: "center", color: "rgba(255,255,255,0.52)", display: "flex", fontSize: "0.72rem", gap: "0.5rem" }}>
+                    <span style={{ flex: 1 }}>Editing an earlier message. Later replies will be replaced.</span>
+                    <button type="button" onClick={() => { setEditingMessageIndex(null); setPlayerInput(""); }} style={{ background: "none", border: "none", color: "rgba(191,219,254,0.78)", cursor: "pointer", fontFamily: "sans-serif", fontSize: "0.72rem", padding: "0.1rem" }}>Cancel</button>
+                    </div>
+                )}
+                {linkedEvent && editingMessageIndex === null && (
                     <div style={{ alignItems: "center", background: "rgba(59,130,246,0.1)", border: "1px solid rgba(96,165,250,0.25)", borderRadius: "8px", display: "flex", gap: "0.5rem", padding: "0.42rem 0.55rem" }}>
                     <span style={{ color: "rgba(191,219,254,0.78)", flex: 1, fontSize: "0.72rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     Regarding: {linkedEvent.title}
@@ -830,6 +890,7 @@ const ChatPanel = ({ isOpen, onClose, requestedCountry, onConsumeRequest }) => {
     const [activeChat, setActiveChat]             = useState(null);
     const [showSelector, setShowSelector]         = useState(false);
     const [composerEvent, setComposerEvent]       = useState(null);
+    const [replyStates, setReplyStates]           = useState({});
     const [hasLoadedInitialData, setHasLoadedInitialData] = useState(false);
     const openChats = chats.filter((chat) => chat.status !== "closed" && Array.isArray(chat.countries) && chat.countries.length > 0);
 
@@ -953,6 +1014,17 @@ const ChatPanel = ({ isOpen, onClose, requestedCountry, onConsumeRequest }) => {
         });
     };
 
+    const handleReplyStateChange = (chatId, nextState) => {
+        const key = String(chatId);
+        setReplyStates((previous) => {
+            if (nextState) return { ...previous, [key]: nextState };
+            if (!previous[key]) return previous;
+            const updated = { ...previous };
+            delete updated[key];
+            return updated;
+        });
+    };
+
     const handleStartChat = (selected) => {
         const newChat = { id: Date.now(), countries: selected, messages: [], status: "open" };
         setChats(prev => { const u = [newChat, ...prev]; saveAllChats(u); return u; });
@@ -1018,7 +1090,7 @@ const ChatPanel = ({ isOpen, onClose, requestedCountry, onConsumeRequest }) => {
             {showSelector && <CountrySelectorModal countries={availableCountries} linkedEvent={composerEvent} loading={loadingCountries} onStart={handleStartChat} onCancel={() => { setShowSelector(false); setComposerEvent(null); }} />}
 
             {activeChat && Array.isArray(activeChat.countries) && activeChat.countries.length > 0 ? (
-                <ConversationView chat={activeChat} playerCountry={playerCountry} gameDate={gameDate} linkedEvent={composerEvent} onDelete={() => handleDeleteChat(activeChat.id)} onBack={() => setActiveChat(null)} onLinkedEventConsumed={() => setComposerEvent(null)} onMessagesUpdate={handleMessagesUpdate} />
+                <ConversationView key={activeChat.id} chat={activeChat} playerCountry={playerCountry} gameDate={gameDate} linkedEvent={composerEvent} replyState={replyStates[String(activeChat.id)]} onDelete={() => handleDeleteChat(activeChat.id)} onBack={() => setActiveChat(null)} onLinkedEventConsumed={() => setComposerEvent(null)} onMessagesUpdate={handleMessagesUpdate} onReplyStateChange={handleReplyStateChange} />
             ) : (
                 <>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "1rem 1.25rem 0.75rem", borderBottom: "1px solid rgba(255,255,255,0.07)", flexShrink: 0 }}>
