@@ -6,10 +6,15 @@ import {
     providerSupportsModelDiscovery,
     setProviderField,
 } from "./providerConfig.js";
-import { JSON_URLS, readJson } from "../../runtime/assets.js";
+import { JSON_URLS, loadCountryNames, readJson } from "../../runtime/assets.js";
 import { chatLanguageDirective, languageDirective } from "../../runtime/i18n.js";
 import { difficultyDirective } from "../../runtime/difficulty.js";
+import { normalizeWorldState, writeWorldState } from "../../runtime/gameState.js";
 import { normalizePromptPack } from "./gameplayPrompts.js";
+import {
+    buildSpeakerAgendaContext,
+    ensureNarrativeSystems,
+} from "./narrativeSystems.js";
 import {
     buildPromptContext,
     renderTemplate,
@@ -17,7 +22,7 @@ import {
 } from "./promptContext.js";
 
 // main.jsx - AI chat module
-// Supports Gemini, OpenAI, Anthropic, and OpenAI-compatible endpoints
+// Supports a local Codex subscription plus Gemini, OpenAI, Anthropic, and compatible endpoints
 // Usage: import { sendMessage, sendDiplomaticMessage, startChat, startDiplomaticChat, loadHistory, loadDiplomaticHistory, buildDiplomaticSystemPrompt } from './main.jsx'
 
 const GEMINI_DEFAULT_MODEL = "gemini-3.5-flash-lite";
@@ -342,6 +347,33 @@ async function providerFetch(url, options = {}) {
         }
         throw error;
     }
+}
+
+async function callCodex(systemPrompt, history, { signal, tool, onChunk } = {}) {
+    const settings = getProviderSettings("codex");
+    const response = await fetch("/api/ai/codex", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            systemPrompt,
+            history,
+            tier: settings.tier || "luna",
+            reasoningEffort: settings.reasoningEffort || "none",
+            schema: tool?.schema ?? null,
+        }),
+        signal,
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        throw new Error(payload?.error || `Local Codex request failed (${response.status}).`);
+    }
+    const text = String(payload?.text ?? "");
+    if (!text) throw new Error("Local Codex did not return a game response.");
+    if (onChunk && !tool) onChunk(text);
+    return tool
+        ? { rawText: text, toolInput: payload?.structured ?? null }
+        : text;
 }
 
 // Local inference servers (llama.cpp, LM Studio, Ollama) only notice a dead
@@ -1110,6 +1142,8 @@ export async function callAI(systemPrompt, history, opts = {}) {
     }
 
     switch (getStoredProvider()) {
+    case "codex":
+        return callCodex(systemPrompt, history, providerOpts);
     case "openai":
         return callOpenAI(systemPrompt, history, providerOpts);
     case "anthropic":
@@ -1195,17 +1229,35 @@ async function buildAdvisorSystemPrompt() {
     return renderTemplate(promptPack.advisor, { ...variables, ...helperValues });
 }
 
-export async function buildDiplomaticSystemPrompt(countries, playerCountry) {
+const promptExcerpt = (value, maxLength) => {
+    const normalized = String(value ?? "").trim();
+    if (normalized.length <= maxLength) return normalized;
+    return `${normalized.slice(0, maxLength).trimEnd()}\n[Older detail omitted to conserve context.]`;
+};
+
+export async function buildDiplomaticSystemPrompt(countries, playerCountry, requestedSpeaker = "") {
     await ensurePromptsLoaded();
-    const participantList = countries.map((country) => `- ${country}`).join("\n");
-    const [gameData, actionData, chatData, worldData, eventData, advisorData] = await Promise.all([
+    const participantNames = (Array.isArray(countries) ? countries : [])
+        .map((country) => String(typeof country === "string" ? country : country?.name || country?.code || "").trim())
+        .filter(Boolean);
+    const participantList = participantNames.map((country) => `- ${country}`).join("\n");
+    const [gameData, actionData, chatData, rawWorldData, eventData, advisorData, countryCatalog] = await Promise.all([
         readJson(JSON_URLS.game, { defaultValue: {} }),
         readJson(JSON_URLS.actions, { defaultValue: [] }),
         readJson(JSON_URLS.chat, { defaultValue: [] }),
         readJson(JSON_URLS.world, { defaultValue: {} }),
         readJson(JSON_URLS.events, { defaultValue: [] }),
         readJson(JSON_URLS.advisor, { defaultValue: [] }),
+        loadCountryNames().catch(() => []),
     ]);
+    const narrative = ensureNarrativeSystems({ countryCatalog, game: gameData, world: rawWorldData });
+    const worldData = normalizeWorldState(narrative.world);
+    if (narrative.changed) await writeWorldState(worldData);
+    const normalizedPlayer = String(playerCountry || gameData?.country || "").trim();
+    const speakingAs = String(requestedSpeaker || "").trim()
+        || participantNames.find((country) => country !== normalizedPlayer)
+        || participantNames[0]
+        || "";
 
     const variables = {
         ...(await buildPromptVariables({
@@ -1214,12 +1266,36 @@ export async function buildDiplomaticSystemPrompt(countries, playerCountry) {
             chatData,
             eventData,
             gameData,
-            speakingAs: countries.find((country) => country !== playerCountry) || "",
+            speakingAs,
             worldData,
         })),
         chatParticipants: participantList || "",
     };
     const helperValues = resolveHelperValues(promptPack.helpers, variables);
+
+    if (getStoredProvider() === "codex") {
+        const speakerStats = worldData.countryStats?.[speakingAs];
+        const speakerTags = worldData.countryTags?.[speakingAs];
+        const speakerFacts = [
+            speakerTags?.length ? `Current traits: ${speakerTags.join(", ")}.` : "",
+            speakerStats && typeof speakerStats === "object" ? `Current state: ${JSON.stringify(speakerStats)}.` : "",
+        ].filter(Boolean).join("\n") || "No additional private state sheet is available.";
+        const privateAgenda = buildSpeakerAgendaContext(worldData, speakingAs);
+        return [
+            `Roleplay the current national leader of ${speakingAs} in a geopolitical simulation.`,
+            `In-game date: ${variables.date || gameData?.gameDate || "unknown"}.`,
+            `Human-controlled polity: ${variables.playerPolity}.`,
+            `Chat participants:\n${participantList || speakingAs}`,
+            "Stay in character and negotiate for your country's interests. Be concrete, restrained, and responsive to the latest message. Do not narrate the scene, speak for another participant, decide the human player's actions, expose private reasoning, or invent a treaty as already accepted. Prefer one to three short paragraphs and stay under 180 words unless the user requests detail.",
+            difficultyDirective(gameData?.difficulty),
+            privateAgenda,
+            `[Responding polity]\n${speakerFacts}`,
+            `[World before play]\n${promptExcerpt(variables.worldBeforeRoundOne, 2400)}`,
+            `[Scenario rules]\n${promptExcerpt(variables.simulationRules, 1400)}`,
+            `[Durable campaign canon]\n${promptExcerpt(variables.consolidatedHistory, 3200)}`,
+            `[Recent events]\n${promptExcerpt(variables.recentEvents, 3600)}`,
+        ].filter(Boolean).join("\n\n");
+    }
 
     // Leaders negotiate as softly or ruthlessly as the chosen difficulty.
     return `${renderTemplate(promptPack.leader, { ...variables, ...helperValues })}\n\n${difficultyDirective(gameData?.difficulty)}`;
@@ -1301,7 +1377,7 @@ function parseReaction(raw) {
 }
 
 export async function sendDiplomaticMessage(playerMessage, speakingAs, countries, opts) {
-    const freshPrompt = await buildDiplomaticSystemPrompt(countries, null, null);
+    const freshPrompt = await buildDiplomaticSystemPrompt(countries, null, speakingAs);
 
     diplomaticHistory.push({ role: "user", parts: [{ text: playerMessage }] });
     diplomaticHistory = compactConversationHistory(diplomaticHistory);

@@ -9,6 +9,7 @@ import { Toolbar } from "./chat";
 import { Search } from "./search";
 import { ForcesPanel } from "./forces";
 import {
+  getCodexIdleDiplomacyEnabled,
   getStoredProvider,
   loadProviderSettingsFormState,
   normalizeProvider,
@@ -163,6 +164,7 @@ const Main = ({
     if (hasNoGames) return undefined;
     const iv = setInterval(() => {
       if (document.visibilityState !== "visible") return;
+      if (getStoredProvider() === "codex" && !getCodexIdleDiplomacyEnabled()) return;
       import("../AI/gameplay.js")
         .then(({ maybeSendIdleDiplomacy }) => maybeSendIdleDiplomacy())
         .catch(() => {});

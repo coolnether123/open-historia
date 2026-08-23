@@ -52,8 +52,10 @@ import { listFlags, createFlag, deleteFlag } from "./flagStore.js";
 import {
   crossOriginWriteAllowed,
   isAllowedHubUrl,
+  isLoopbackAddress,
   parseByteRange,
 } from "./security.js";
+import { getCodexStatus, runCodexGameTask } from "./codexBridge.js";
 
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 import { DATA_DIR } from "./dataDir.js";
@@ -62,6 +64,7 @@ const PORT = process.env.PORT || 3000;
 const distDir = path.join(__dirname, "../dist");
 
 const jsonParser = express.json({ limit: "64mb" });
+const codexJsonParser = express.json({ limit: "8mb" });
 const largeJsonParser = express.json({ limit: "2048mb" });
 const uploadParser = express.raw({ type: () => true, limit: "2048mb" });
 
@@ -632,6 +635,49 @@ app.post("/api/ai/relay", largeJsonParser, async (req, res) => {
     if (!controller.signal.aborted && !res.headersSent) {
       sendError(res, 502, error);
     }
+  }
+});
+
+// Local Codex is authenticated by the desktop/CLI's ChatGPT subscription. The
+// browser never sees auth tokens, and remote LAN clients cannot spend the local
+// subscription unless the server owner explicitly opts in.
+const ALLOW_CODEX_LAN = process.env.OH_CODEX_ALLOW_LAN === "1";
+const codexRuntimeDir = path.join(DATA_DIR, "codex-runtime");
+
+app.get("/api/ai/codex/status", async (_req, res) => {
+  res.json(await getCodexStatus());
+});
+
+app.post("/api/ai/codex", codexJsonParser, async (req, res) => {
+  if (!ALLOW_CODEX_LAN && !isLoopbackAddress(req.socket?.remoteAddress)) {
+    return sendError(res, 403, new Error(
+      "Codex subscription calls are local-only. Set OH_CODEX_ALLOW_LAN=1 to allow trusted LAN clients.",
+    ));
+  }
+
+  const controller = new AbortController();
+  let completed = false;
+  const abortCodex = () => {
+    if (!completed) controller.abort(new Error("Codex request cancelled by the client."));
+  };
+  req.once("aborted", abortCodex);
+  res.once("close", abortCodex);
+
+  try {
+    const body = req.body ?? {};
+    const result = await runCodexGameTask({
+      systemPrompt: body.systemPrompt,
+      history: body.history,
+      tier: body.tier,
+      reasoningEffort: body.reasoningEffort,
+      schema: body.schema,
+      runtimeDir: codexRuntimeDir,
+      signal: controller.signal,
+    });
+    completed = true;
+    res.json(result);
+  } catch (error) {
+    if (!controller.signal.aborted && !res.headersSent) sendError(res, 502, error);
   }
 });
 

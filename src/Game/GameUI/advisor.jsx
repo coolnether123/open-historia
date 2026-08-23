@@ -1,6 +1,7 @@
 /*! Open Historia — portions (drawer close/slide + mobile layout) © 2026 Nicholas Krol, MIT (see src/Editor/LICENSE). */
 import React, { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
+import { formatGameDate } from "../../runtime/gameDate.js";
 import { Chart, registerables } from "chart.js";
 import { sendMessage, startChat, loadHistory } from "../AI/main.jsx";
 import { JSON_URLS, readJson, writeJson } from "../../runtime/assets.js";
@@ -321,8 +322,7 @@ const AdvisorPanel = ({ isAdvisorOpen, onClose, width, onResize }) => {
     };
 
     const formatDate = (dateStr) => {
-        if (!dateStr) return "";
-        return new Date(dateStr).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
+        return formatGameDate(dateStr);
     };
 
     if (!hasOpened) return null;

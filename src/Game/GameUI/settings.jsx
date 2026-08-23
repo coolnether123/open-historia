@@ -410,6 +410,106 @@ const SettingsInput = ({
     </div>
 );
 
+const CodexSettings = ({ settings, onSettingChange }) => {
+    const [status, setStatus] = useState(null);
+    const [statusError, setStatusError] = useState("");
+
+    const refreshStatus = () => {
+        setStatusError("");
+        fetch("/api/ai/codex/status")
+        .then(async (response) => {
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload?.error || "Could not check Codex.");
+            setStatus(payload);
+        })
+        .catch((error) => setStatusError(error.message));
+    };
+
+    useEffect(refreshStatus, []);
+
+    const usage = status?.usage ?? {};
+    const statusText = statusError
+        ? statusError
+        : status?.authenticated
+            ? "Connected to your ChatGPT subscription"
+            : status?.detail || "Checking local Codex sign-in…";
+
+    return (
+        <>
+        <div style={{
+            marginBottom: "0.85rem",
+            padding: "0.7rem",
+            borderRadius: "8px",
+            border: `1px solid ${status?.authenticated ? "rgba(52,211,153,0.45)" : "rgba(245,158,11,0.45)"}`,
+            backgroundColor: status?.authenticated ? "rgba(16,185,129,0.1)" : "rgba(245,158,11,0.08)",
+        }}>
+        <div style={{ fontSize: "0.8rem", fontWeight: 700 }}>
+        {status?.authenticated ? "● Codex ready" : "○ Codex sign-in"}
+        </div>
+        <div style={{ ...helperStyle, marginTop: "0.25rem" }}>{statusText}</div>
+        <button
+        type="button"
+        onClick={refreshStatus}
+        style={{ ...inputStyle, width: "auto", marginTop: "0.55rem", padding: "0.35rem 0.6rem", cursor: "pointer" }}
+        >
+        Refresh
+        </button>
+        </div>
+
+        <div style={fieldGroupStyle}>
+        <label style={labelStyle}>Model tier</label>
+        <select
+        value={settings.codexTier || "luna"}
+        onChange={(event) => onSettingChange("codexTier", event.target.value)}
+        style={{ ...inputStyle, cursor: "pointer" }}
+        >
+        <option value="luna">Luna — economy (default)</option>
+        <option value="terra">Terra — balanced</option>
+        <option value="sol">Sol — highest capability</option>
+        </select>
+        <div style={helperStyle}>
+        Luna minimizes subscription usage. Terra and Sol are always explicit choices; the game never auto-escalates.
+        </div>
+        </div>
+
+        <div style={fieldGroupStyle}>
+        <label style={labelStyle}>Reasoning effort</label>
+        <select
+        value={settings.codexReasoningEffort || "none"}
+        onChange={(event) => onSettingChange("codexReasoningEffort", event.target.value)}
+        style={{ ...inputStyle, cursor: "pointer" }}
+        >
+        <option value="none">Off — lowest token use (default)</option>
+        <option value="low">Low</option>
+        <option value="medium">Medium</option>
+        <option value="high">High</option>
+        </select>
+        <div style={helperStyle}>
+        Use reasoning only when a complex turn needs it. Every call is isolated, read-only, tool-free, and queued one at a time.
+        </div>
+        </div>
+
+        <Toggle
+        label="Idle diplomatic messages"
+        enabled={settings.codexIdleDiplomacy === "1"}
+        onToggle={() => onSettingChange(
+            "codexIdleDiplomacy",
+            settings.codexIdleDiplomacy === "1" ? "0" : "1",
+        )}
+        />
+        <div style={{ ...helperStyle, marginTop: "-0.6rem", marginBottom: "0.85rem" }}>
+        Off by default so an open game never spends Codex usage in the background.
+        </div>
+
+        {Number(usage.calls) > 0 && (
+            <div style={{ ...helperStyle, paddingTop: "0.6rem", borderTop: "1px solid rgba(255,255,255,0.1)" }}>
+            This server session: {Number(usage.calls).toLocaleString()} calls · {Number(usage.inputTokens || 0).toLocaleString()} input · {Number(usage.cachedInputTokens || 0).toLocaleString()} cached · {Number(usage.outputTokens || 0).toLocaleString()} output tokens
+            </div>
+        )}
+        </>
+    );
+};
+
 const ProviderSettingsPanel = ({ provider, settings, onSettingChange }) => {
     const meta = getProviderMeta(provider);
     const supportsModelDiscovery = providerSupportsModelDiscovery(provider);
@@ -437,6 +537,10 @@ const ProviderSettingsPanel = ({ provider, settings, onSettingChange }) => {
         <div style={{ ...helperStyle, marginTop: 0, marginBottom: "0.85rem" }}>
         {meta.description}
         </div>
+
+        {provider === "codex" && (
+            <CodexSettings settings={settings} onSettingChange={onSettingChange} />
+        )}
 
         {provider === "gemini" && (
             <>
@@ -601,7 +705,7 @@ const ProviderSettingsPanel = ({ provider, settings, onSettingChange }) => {
             </>
         )}
 
-        <div style={{ marginTop: "0.5rem" }}>
+        {provider !== "codex" && <div style={{ marginTop: "0.5rem" }}>
         <Toggle
         label="Model reasoning"
         enabled={reasoningOn}
@@ -612,7 +716,7 @@ const ProviderSettingsPanel = ({ provider, settings, onSettingChange }) => {
         reasoning effort, Claude extended thinking). Slower and costs more tokens;
         needs a model that supports it.
         </div>
-        </div>
+        </div>}
         </div>
     );
 };

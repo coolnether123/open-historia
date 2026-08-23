@@ -44,6 +44,14 @@ import {
 import { dedupeGeneratedEvents } from "../../runtime/eventDedup.js";
 import { difficultyDirective } from "../../runtime/difficulty.js";
 import { MAP_SETTING_KEYS, getMapSetting } from "../../runtime/mapSettings.js";
+import {
+  advanceNarrativeSystems,
+  buildDomesticPressureContext,
+  buildHiddenAgendaContext,
+  createDomesticPressureEvent,
+  ensureNarrativeSystems,
+  isDomesticPressureDue,
+} from "./narrativeSystems.js";
 
 const CHAT_HINT_PATTERNS = [
   /\bchat\b/i,
@@ -367,9 +375,21 @@ const buildPlayerPolityReputationText = async (bundle) => {
 };
 
 const buildTemplateVariables = async (bundle, options = {}) => {
+  const countryCatalog = await loadCountryNames().catch(() => []);
+  const narrative = ensureNarrativeSystems({
+    countryCatalog,
+    game: bundle.game,
+    world: bundle.world,
+  });
+  bundle.world = normalizeWorldState(narrative.world);
+  if (narrative.changed) {
+    await writeWorldState(bundle.world);
+  }
   const variables = await buildPromptContext(bundle, options);
   return {
     ...variables,
+    domesticPressureContext: buildDomesticPressureContext(bundle.world, bundle.game),
+    hiddenAgendaContext: buildHiddenAgendaContext(bundle.world),
     playerPolityReputationContext: await buildPlayerPolityReputationText(bundle),
     unitsSummary:
       variables.unitsSummary +
@@ -418,6 +438,14 @@ const runJsonTask = async (taskKey, {
   // country ... it just doesn't give you a choice and makes it an event."
   if (["jumpForward", "autoJumpForward"].includes(taskKey)) {
     const playerName = normalizeString(variables.playerPolity) || "the player's polity";
+    const agendaContext = normalizeString(variables.hiddenAgendaContext);
+    if (agendaContext) {
+      systemPrompt = `${systemPrompt}\n\n[Private Spotlight Agendas]\n${agendaContext}`;
+    }
+    const domesticContext = normalizeString(variables.domesticPressureContext);
+    if (domesticContext) {
+      systemPrompt = `${systemPrompt}\n\n[Domestic Pressure Due This Turn]\n${domesticContext}`;
+    }
     systemPrompt = `${systemPrompt}\n\n[Player Agency]\n${playerName} is controlled by a human player. Never commit ${playerName} to a major decision the player did not actually make: do not sign treaties, alliances, ceasefires, surrenders, trade pacts, unions, or other binding agreements on the player's behalf, do not accept or reject offers for them, and do not have ${playerName} take landmark unilateral action (declaring war, ceding territory, changing government) unless it directly executes one of the player's planned actions, chat replies, or explicit requests. When another polity seeks such an agreement or decision from the player, present it as something the player can answer: a diplomaticOutreach entry or an impacts.createdChats chat where the counterpart speaks first and makes the proposal, or an event describing the offer as OPEN and awaiting the player's response. Events remain free to narrate what other polities do among themselves and to resolve the player's own queued actions exactly as ordered.`;
     // Map truth: the recurring field report is the OPPOSITE failure — invasions
     // narrated turn after turn with zero regionTransfers, so the map never moves.
@@ -1479,24 +1507,50 @@ const applySimulationResult = async ({
   baseWorld,
   result,
 }) => {
+  const nextRound = (baseGame.round || 1) + 1;
+  const domesticDue = ["jump", "auto"].includes(result.mode)
+    && isDomesticPressureDue(baseWorld, nextRound);
   const generatedEvents = normalizeArray(result.events)
     .map((entry, index) => normalizeGeneratedEvent({
       ...entry,
       source: entry?.source || result.generation?.source || "ai",
     }, index))
     .filter(Boolean);
+  if (domesticDue && !generatedEvents.some((event) => event.kind === "domestic" && event.playerRelated)) {
+    const fallbackDomesticEvent = normalizeGeneratedEvent(createDomesticPressureEvent({
+      date: normalizeString(result.stopDate) || baseGame.gameDate,
+      game: baseGame,
+      round: nextRound,
+      world: baseWorld,
+    }), generatedEvents.length);
+    if (fallbackDomesticEvent) generatedEvents.push(fallbackDomesticEvent);
+  }
   // The model is shown the running timeline as context and tends to restate events
   // it already reported; each restatement gets a fresh random id, so only a
   // content-key de-dup catches it. Drop restatements BEFORE they persist, apply
   // impacts, or land in this turn's record (also see the [New Developments Only]
   // directive in buildTemplateVariables).
   const priorEvents = normalizeEvents(baseEvents);
-  const freshEvents = dedupeGeneratedEvents(priorEvents, generatedEvents);
+  let freshEvents = dedupeGeneratedEvents(priorEvents, generatedEvents);
+  if (domesticDue && !freshEvents.some((event) => event.kind === "domestic" && event.playerRelated)) {
+    const fallbackDomesticEvent = normalizeGeneratedEvent(createDomesticPressureEvent({
+      date: normalizeString(result.stopDate) || baseGame.gameDate,
+      game: baseGame,
+      round: nextRound,
+      world: baseWorld,
+    }), generatedEvents.length);
+    if (fallbackDomesticEvent) {
+      freshEvents = [
+        ...freshEvents,
+        ...dedupeGeneratedEvents([...priorEvents, ...freshEvents], [fallbackDomesticEvent]),
+      ];
+    }
+  }
   const nextEvents = [...priorEvents, ...freshEvents];
   const nextGame = normalizeGameData({
     ...baseGame,
     gameDate: normalizeString(result.stopDate) || baseGame.gameDate,
-    round: (baseGame.round || 1) + 1,
+    round: nextRound,
   });
   const plannedActionSnapshot = normalizeActions(baseActions).filter((action) => action.status === "planned");
   const nextActions = normalizeActions(baseActions).map((action) => ({
@@ -1538,7 +1592,12 @@ const applySimulationResult = async ({
       ].slice(0, 12),
     },
   });
-  let nextWorld = worldWithImpacts;
+  let nextWorld = advanceNarrativeSystems({
+    domesticOccurred: domesticDue && freshEvents.some((event) => event.kind === "domestic" && event.playerRelated),
+    events: freshEvents,
+    game: nextGame,
+    world: worldWithImpacts,
+  });
 
   for (const event of freshEvents) {
     for (const createdChat of event.impacts.createdChats) {
@@ -1567,7 +1626,7 @@ const applySimulationResult = async ({
         chats: nextChats,
         events: nextEvents,
         game: nextGame,
-        world: worldWithImpacts,
+        world: nextWorld,
       });
     } catch (error) {
       console.warn("[ai] campaign history consolidation failed; the completed turn will still be saved.", error);

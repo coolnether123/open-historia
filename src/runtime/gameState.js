@@ -18,6 +18,11 @@ export const WORLD_DEFAULTS = {
   actionSuggestions: [],
   activeCatalyst: null,
   consolidatedHistory: [],
+  // Local narrative directors. Hidden agendas give a fixed cast of non-player
+  // polities continuity without another AI call; domesticPressure schedules a
+  // recurring player-country event through the normal timeline simulation.
+  domesticPressure: { nextRound: 0, sequence: 0 },
+  hiddenAgendas: [],
   // Per-polity international reputation (0-100), evolved by the AI each turn via
   // polityChanges and fed back into prompts. Authoritative, unlike the on-demand
   // stat sheet it was first read from.
@@ -936,6 +941,38 @@ const normalizeConsolidatedHistory = (value) => normalizeArray(value)
   })
   .filter(Boolean);
 
+const normalizeHiddenAgendas = (agendas) => {
+  const seen = new Set();
+  return normalizeArray(agendas)
+    .map((agenda) => {
+      if (!agenda || typeof agenda !== "object") return null;
+      const country = normalizeOptionalString(agenda.country);
+      const objective = normalizeOptionalString(agenda.objective);
+      const key = country.toLowerCase();
+      if (!country || !objective || seen.has(key)) return null;
+      seen.add(key);
+      return {
+        agendaId: normalizeOptionalString(agenda.agendaId),
+        country,
+        lastActiveRound: Math.max(0, Math.trunc(Number(agenda.lastActiveRound) || 0)),
+        method: normalizeOptionalString(agenda.method),
+        momentum: Math.max(0, Math.min(100, Math.trunc(Number(agenda.momentum) || 0))),
+        objective,
+        selectedAtRound: Math.max(1, Math.trunc(Number(agenda.selectedAtRound) || 1)),
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 10);
+};
+
+const normalizeDomesticPressure = (pressure) => {
+  const value = pressure && typeof pressure === "object" ? pressure : {};
+  return {
+    nextRound: Math.max(0, Math.trunc(Number(value.nextRound) || 0)),
+    sequence: Math.max(0, Math.trunc(Number(value.sequence) || 0)),
+  };
+};
+
 export const normalizeWorldState = (world) => {
   const nextWorld = world && typeof world === "object" ? world : {};
   const polityOverrides = Object.fromEntries(
@@ -994,6 +1031,8 @@ export const normalizeWorldState = (world) => {
     actionSuggestions: normalizeActionSuggestions(nextWorld.actionSuggestions),
     activeCatalyst: normalizeCatalyst(nextWorld.activeCatalyst),
     consolidatedHistory: normalizeConsolidatedHistory(nextWorld.consolidatedHistory),
+    domesticPressure: normalizeDomesticPressure(nextWorld.domesticPressure),
+    hiddenAgendas: normalizeHiddenAgendas(nextWorld.hiddenAgendas),
     internationalReputation,
     labelFont: normalizeOptionalString(nextWorld.labelFont),
     labelHaloColor: normalizeOptionalString(nextWorld.labelHaloColor),

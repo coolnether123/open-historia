@@ -1,7 +1,14 @@
 /*! Open Historia — portions (reasoning-effort toggle persistence) © 2026 Nicholas Krol, MIT (see src/Editor/LICENSE). */
-export const DEFAULT_PROVIDER = "gemini";
+export const DEFAULT_PROVIDER = "codex";
 
 export const PROVIDER_OPTIONS = [
+    {
+        value: "codex",
+        label: "Codex Subscription",
+        group: "Local subscription",
+        description: "Local Codex CLI using your signed-in ChatGPT plan",
+        searchTerms: ["chatgpt", "subscription", "luna", "terra", "sol", "local"],
+    },
     {
         value: "gemini",
         label: "Gemini",
@@ -40,6 +47,11 @@ export const PROVIDER_OPTIONS = [
 ];
 
 const PROVIDER_SETTINGS = {
+    codex: {
+        tier: { storageKey: "codex_model_tier", defaultValue: "luna" },
+        reasoningEffort: { storageKey: "codex_reasoning_effort", defaultValue: "none" },
+        idleDiplomacy: { storageKey: "codex_idle_diplomacy", defaultValue: "0" },
+    },
     gemini: {
         apiKey: { storageKey: "gemini_api_key", defaultValue: "" },
         model: { storageKey: "gemini_model", defaultValue: "gemini-3.5-flash-lite" },
@@ -83,6 +95,9 @@ const PROVIDER_SETTINGS = {
 };
 
 const FORM_FIELD_MAP = {
+    codexTier: { provider: "codex", field: "tier" },
+    codexReasoningEffort: { provider: "codex", field: "reasoningEffort" },
+    codexIdleDiplomacy: { provider: "codex", field: "idleDiplomacy" },
     geminiApiKey: { provider: "gemini", field: "apiKey" },
     geminiModel: { provider: "gemini", field: "model" },
     geminiCustomParams: { provider: "gemini", field: "customParams" },
@@ -162,7 +177,14 @@ export function getProviderSettings(provider) {
         endpoint: getProviderField(normalized, "endpoint"),
         model: getProviderField(normalized, "model"),
         customParams: getProviderField(normalized, "customParams"),
+        tier: getProviderField(normalized, "tier"),
+        reasoningEffort: getProviderField(normalized, "reasoningEffort"),
+        idleDiplomacy: getProviderField(normalized, "idleDiplomacy"),
     };
+}
+
+export function getCodexIdleDiplomacyEnabled() {
+    return getProviderField("codex", "idleDiplomacy") === "1";
 }
 
 // Global "model reasoning" toggle — applied by callAI in every provider mode

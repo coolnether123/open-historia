@@ -13,6 +13,8 @@ import {
 } from "../../runtime/assets.js";
 import { flagEmojiFromGid } from "../../runtime/countryFlags.js";
 import { readChatsState, writeChatsState } from "../../runtime/gameState.js";
+import { formatGameDate } from "../../runtime/gameDate.js";
+import { getProviderSettings, getStoredProvider } from "../AI/providerConfig.js";
 
 // ── Storage ───────────────────────────────────────────────────────────────────
 
@@ -130,12 +132,20 @@ const MarkdownStyleInjector = () => {
 // ── ThinkingDots ──────────────────────────────────────────────────────────────
 
 const ThinkingDots = () => {
-    const [dots, setDots] = useState(0);
+    const [ticks, setTicks] = useState(0);
     useEffect(() => {
-        const iv = setInterval(() => setDots(d => (d + 1) % 4), 500);
+        const iv = setInterval(() => setTicks(value => value + 1), 500);
         return () => clearInterval(iv);
     }, []);
-    return <span style={{ opacity: 0.6 }}>Thinking{".".repeat(dots)}&nbsp;</span>;
+    const dots = ticks % 4;
+    const codex = getStoredProvider() === "codex";
+    const tier = getProviderSettings("codex").tier || "luna";
+    return (
+        <span style={{ opacity: 0.6 }}>
+        {codex ? `${tier[0].toUpperCase()}${tier.slice(1)} is responding` : "Thinking"}
+        {".".repeat(dots)}{codex ? ` ${Math.floor(ticks / 2)}s` : ""}&nbsp;
+        </span>
+    );
 };
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
@@ -230,7 +240,7 @@ const MessageBubble = ({ msg }) => {
 
         {!isPlayer && msg.time && (
             <span style={{ fontSize: "0.65rem", color: "rgba(255,255,255,0.3)", marginTop: "0.25rem", display: "block" }}>
-            {new Date(msg.time).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" })}
+            {formatGameDate(msg.time)}
             </span>
         )}
         </div>
@@ -513,6 +523,13 @@ const ConversationView = ({ chat, playerCountry, gameDate, onDelete, onBack, onM
 
         const buildResponsiveQueue = async (updatedMessages) => {
             const rotatedQueue = buildRoundQueue();
+            // A one-to-one chat has no speaker choice to make. For Codex,
+            // round-robin group turns are deliberate too: asking a second
+            // model call merely to pick the next speaker doubled both latency
+            // and subscription-token use for every diplomatic message.
+            if (rotatedQueue.length <= 1 || getStoredProvider() === "codex") {
+                return rotatedQueue;
+            }
             const suggestedSpeaker = await chooseNextDiplomaticSpeaker({
                 chat: {
                     ...chat,
