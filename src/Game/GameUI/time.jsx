@@ -20,7 +20,7 @@ import {
     readWorldState,
 } from "../../runtime/gameState.js";
 import { loadPlayablePolities } from "../../runtime/playablePolities.js";
-import { switchPlayerCountry } from "../../runtime/playerCountry.js";
+import { PLAYER_COUNTRY_CHANGED_EVENT, switchPlayerCountry } from "../../runtime/playerCountry.js";
 import { setWorldStateOverride } from "../Map/useWorldState.js";
 import { setUnitsOverride } from "../Map/unitsController.js";
 import { useIsMobile } from "../../runtime/useIsMobile.js";
@@ -1312,6 +1312,14 @@ const DateWidget = ({
 
     useEffect(() => {
         ensureTimelineStyles();
+    }, []);
+
+    useEffect(() => {
+        const handleCountryChanged = (event) => {
+            if (event.detail?.game) setGameData(event.detail.game);
+        };
+        window.addEventListener(PLAYER_COUNTRY_CHANGED_EVENT, handleCountryChanged);
+        return () => window.removeEventListener(PLAYER_COUNTRY_CHANGED_EVENT, handleCountryChanged);
     }, []);
 
     useEffect(() => {
