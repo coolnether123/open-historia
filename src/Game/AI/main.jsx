@@ -20,6 +20,8 @@ import {
     renderTemplate,
     resolveHelperValues,
 } from "./promptContext.js";
+import { formatDiplomaticMessageForAI } from "./diplomaticEventLink.js";
+import { AI_WRITING_QUALITY_DIRECTIVE } from "./writingQuality.js";
 
 // main.jsx - AI chat module
 // Supports a local Codex subscription plus Gemini, OpenAI, Anthropic, and compatible endpoints
@@ -1134,6 +1136,7 @@ export async function callAI(systemPrompt, history, opts = {}) {
     // Non-English players get replies in their language at the source —
     // native answers beat post-translating them (see runtime/i18n.js).
     const { languageMode = "ui", ...providerOpts } = opts;
+    systemPrompt = `${systemPrompt}\n\n${AI_WRITING_QUALITY_DIRECTIVE}`;
     const directive = languageMode === "none" ? ""
         : languageMode === "chat" ? chatLanguageDirective()
         : languageDirective();
@@ -1363,7 +1366,7 @@ export function loadDiplomaticHistory(savedMessages) {
     .filter((msg) => ["user", "leader"].includes(msg.role))
     .map((msg) => ({
         role: msg.role === "user" ? "user" : "model",
-        parts: [{ text: msg.text }],
+        parts: [{ text: formatDiplomaticMessageForAI(msg.text, msg) }],
     }));
     diplomaticHistory = compactConversationHistory(diplomaticHistory);
 }
@@ -1376,10 +1379,10 @@ function parseReaction(raw) {
     return { reply, reaction };
 }
 
-export async function sendDiplomaticMessage(playerMessage, speakingAs, countries, opts) {
+export async function sendDiplomaticMessage(playerMessage, speakingAs, countries, opts = {}) {
     const freshPrompt = await buildDiplomaticSystemPrompt(countries, null, speakingAs);
 
-    diplomaticHistory.push({ role: "user", parts: [{ text: playerMessage }] });
+    diplomaticHistory.push({ role: "user", parts: [{ text: formatDiplomaticMessageForAI(playerMessage, opts.linkedEvent) }] });
     diplomaticHistory = compactConversationHistory(diplomaticHistory);
 
     const turnInstruction = `[It is now ${speakingAs}'s turn to respond to the above. Respond only as the leader of ${speakingAs}, naturally, without prefixing your country name.\n\nOptionally, if the message warrants a emotional reaction (surprise, offense, delight, suspicion, confusion etc.), append a single line at the very end in this exact format:\nREACTION:<emoji>\n- use only a single emoji in utf-8 format after the colon, no spaces, no extra text. Otherwise omit it entirely.]`;

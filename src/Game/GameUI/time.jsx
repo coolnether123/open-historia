@@ -23,6 +23,7 @@ import { setWorldStateOverride } from "../Map/useWorldState.js";
 import { setUnitsOverride } from "../Map/unitsController.js";
 import { useIsMobile } from "../../runtime/useIsMobile.js";
 import { MAP_SETTING_KEYS, useMapSetting } from "../../runtime/mapSettings.js";
+import { requestDiplomaticChat } from "./chat.jsx";
 
 dayjs.extend(advancedFormat);
 
@@ -262,6 +263,41 @@ const collectEventTags = (event, { polityLookup, regionLookup }) => {
     }
 
     return Array.from(labels).slice(0, 8);
+};
+
+const collectEventCountries = (event, { playerCountry, polityLookup }) => {
+    const countries = new Map();
+    const addCountry = (country) => {
+        if (!country) return;
+        const code = String(country.code ?? "").trim();
+        const name = String(country.name ?? resolvePolityName(code, polityLookup)).trim();
+        if (!name) return;
+        countries.set(name.toLowerCase(), { code, name });
+    };
+
+    for (const country of event?.countries ?? []) addCountry(country);
+    if (event?.playerRelated) addCountry(playerCountry);
+    for (const change of event?.impacts?.polityChanges ?? []) {
+        addCountry({ code: change.code, name: change.name });
+    }
+    for (const transfer of event?.impacts?.regionTransfers ?? []) {
+        addCountry({ code: transfer.fromCode });
+        addCountry({ code: transfer.toCode });
+    }
+    for (const chat of event?.impacts?.createdChats ?? []) {
+        for (const country of chat?.countries ?? []) addCountry(country);
+    }
+
+    // Old saves predate structured event-country links. Use exact displayed
+    // polity names in their text so those events still offer useful links.
+    const eventText = `${event?.title ?? ""} ${event?.description ?? ""}`.toLowerCase();
+    for (const [code, name] of polityLookup) {
+        if (String(name).length >= 4 && eventText.includes(String(name).toLowerCase())) {
+            addCountry({ code, name });
+        }
+    }
+
+    return Array.from(countries.values()).slice(0, 12);
 };
 
 const buildEventLookup = (events) => new Map((events ?? []).map((event) => [event.id, event]));
@@ -602,23 +638,6 @@ const MetricPill = ({ children, icon = null, tone = "default" }) => {
     );
 };
 
-const TagPill = ({ children }) => (
-    <span
-    style={{
-        background: "rgba(255,255,255,0.04)",
-                                   border: "1px solid rgba(255,255,255,0.08)",
-                                   borderRadius: "999px",
-                                   color: "rgba(226,228,240,0.74)",
-                                   display: "inline-flex",
-                                   fontSize: "0.68rem",
-                                   fontWeight: 600,
-                                   padding: "0.24rem 0.55rem",
-    }}
-    >
-    {children}
-    </span>
-);
-
 const ghostButtonStyle = {
     alignItems: "center",
     background: "rgba(255,255,255,0.035)",
@@ -636,8 +655,20 @@ const ghostButtonStyle = {
 };
 
 const EventCard = ({ event, footer = null, lookups }) => {
-    const tags = collectEventTags(event, lookups);
+    const countries = collectEventCountries(event, lookups);
+    const playerCountryKeys = new Set([
+        String(lookups?.playerCountry?.code || "").trim().toLowerCase(),
+        String(lookups?.playerCountry?.name || "").trim().toLowerCase(),
+    ].filter(Boolean));
+    const discussionCountries = countries.filter((country) =>
+        ![country.code, country.name]
+            .map((value) => String(value || "").trim().toLowerCase())
+            .some((value) => value && playerCountryKeys.has(value)),
+    );
     const mapChangeCount = getEventMapChangeCount(event);
+    const [showCountryPicker, setShowCountryPicker] = useState(false);
+    const [selectedCountryName, setSelectedCountryName] = useState("");
+    const selectedCountry = discussionCountries.find((country) => country.name === selectedCountryName) || discussionCountries[0];
 
     return (
         <div
@@ -673,17 +704,15 @@ const EventCard = ({ event, footer = null, lookups }) => {
             <MetricPill tone="accent">Fallback</MetricPill>
         )}
         </div>
+        {countries.length > 0 && (
+            <div style={{ color: "rgba(191,219,254,0.62)", fontSize: "0.68rem", lineHeight: 1.35, maxWidth: "48%", textAlign: "right" }}>
+            <span style={{ color: "rgba(191,219,254,0.42)" }}>Countries involved: </span>
+            {countries.map((country) => country.name).join(", ")}
+            </div>
+        )}
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: "0.65rem", padding: "0.95rem 1rem 1rem" }}>
-        {tags.length > 0 && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.35rem" }}>
-            {tags.map((tag) => (
-                <TagPill key={`${event.id}-${tag}`}>{tag}</TagPill>
-            ))}
-            </div>
-        )}
-
         <div style={{ color: "rgba(255,255,255,0.94)", fontSize: "0.82rem", fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase" }}>
         {event.title}
         </div>
@@ -692,6 +721,20 @@ const EventCard = ({ event, footer = null, lookups }) => {
             <div className="timeline-markdown" style={{ color: "rgba(221,228,240,0.82)", fontSize: "0.77rem", lineHeight: "1.58" }}>
             <ReactMarkdown>{event.description}</ReactMarkdown>
             </div>
+        )}
+
+        {discussionCountries.length > 0 && (
+            showCountryPicker ? (
+                <div style={{ alignItems: "center", background: "rgba(255,255,255,0.025)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", display: "flex", gap: "0.45rem", padding: "0.5rem" }}>
+                <select aria-label="Country involved in this event" value={selectedCountry?.name || ""} onChange={(changeEvent) => setSelectedCountryName(changeEvent.target.value)} style={{ background: "#111827", border: "1px solid rgba(255,255,255,0.16)", borderRadius: "6px", color: "white", flex: 1, fontSize: "0.74rem", minWidth: 0, padding: "0.42rem" }}>
+                {discussionCountries.map((country) => <option key={country.code || country.name} value={country.name}>{country.name}</option>)}
+                </select>
+                <button type="button" onClick={() => requestDiplomaticChat(selectedCountry, { linkedEvent: event })} style={{ ...ghostButtonStyle, background: "rgba(59,130,246,0.18)", borderColor: "rgba(96,165,250,0.35)" }}>Open chat</button>
+                <button type="button" aria-label="Cancel country selection" onClick={() => setShowCountryPicker(false)} style={{ ...ghostButtonStyle, paddingInline: "0.55rem" }}>✕</button>
+                </div>
+            ) : (
+                <button type="button" onClick={() => setShowCountryPicker(true)} style={{ ...ghostButtonStyle, alignSelf: "flex-start" }}>Discuss this event</button>
+            )
         )}
 
         {footer}
@@ -854,6 +897,51 @@ const JumpNode = ({ isLoading, opt, onJump }) => {
     );
 };
 
+const WORLD_PROCESSING_LINES = [
+    "Checking what every capital is up to.",
+    "Following rumors across the borders.",
+    "Seeing which plans survive contact with the world.",
+    "Letting history argue with itself.",
+    "Drawing the next lines on the map.",
+    "Waiting for the diplomats to finish their coffee.",
+];
+
+const ProcessingStatus = ({ onCancel }) => {
+    const [elapsedSeconds, setElapsedSeconds] = useState(0);
+    const [lineIndex, setLineIndex] = useState(0);
+
+    useEffect(() => {
+        const elapsedTimer = window.setInterval(() => setElapsedSeconds((seconds) => seconds + 1), 1000);
+        const lineTimer = window.setInterval(() => {
+            setLineIndex((current) => {
+                const offset = 1 + Math.floor(Math.random() * (WORLD_PROCESSING_LINES.length - 1));
+                return (current + offset) % WORLD_PROCESSING_LINES.length;
+            });
+        }, 4200);
+
+        return () => {
+            window.clearInterval(elapsedTimer);
+            window.clearInterval(lineTimer);
+        };
+    }, []);
+
+    return (
+        <div aria-live="polite" style={{ background: "rgba(37,99,235,0.1)", border: "1px solid rgba(96,165,250,0.28)", borderRadius: "10px", display: "flex", flexDirection: "column", gap: "0.5rem", marginBottom: "0.9rem", padding: "0.85rem 0.95rem", width: "min(18rem, 100%)" }}>
+        <div style={{ alignItems: "center", display: "flex", gap: "0.55rem" }}>
+        <SpinnerRing size={16} />
+        <strong style={{ color: "rgba(255,255,255,0.92)", fontSize: "0.82rem" }}>Processing your time skip</strong>
+        <span style={{ color: "rgba(191,219,254,0.58)", fontSize: "0.7rem", marginLeft: "auto" }}>{elapsedSeconds}s</span>
+        </div>
+        <div style={{ color: "rgba(219,234,254,0.68)", fontSize: "0.75rem", lineHeight: 1.45, minHeight: "1.1rem" }}>
+        {WORLD_PROCESSING_LINES[lineIndex]}
+        </div>
+        {onCancel && (
+            <button type="button" onClick={onCancel} style={{ ...ghostButtonStyle, alignSelf: "flex-start", borderColor: "rgba(248,113,113,0.28)", color: "#fecaca", marginTop: "0.1rem" }}>Cancel time skip</button>
+        )}
+        </div>
+    );
+};
+
 const TimelineSkipPanel = ({
     canUndo,
     currentDate,
@@ -895,6 +983,7 @@ const TimelineSkipPanel = ({
         title="Timeline"
         topOffset={topOffset}
         >
+        {isLoading && <ProcessingStatus onCancel={onCancel} />}
         <div
         style={{
             alignItems: "center",
@@ -1056,45 +1145,6 @@ const TimelineSkipPanel = ({
         </button>
         </div>
         </div>
-
-        {isLoading && (
-            <div
-            style={{
-                alignItems: "center",
-                background: "rgba(255,255,255,0.04)",
-                       border: "1px solid rgba(255,255,255,0.08)",
-                       borderRadius: "12px",
-                       color: "rgba(255,255,255,0.75)",
-                       display: "flex",
-                       fontSize: "0.76rem",
-                       gap: "0.55rem",
-                       justifyContent: "center",
-                       padding: "0.68rem 0.8rem",
-            }}
-            >
-            <SpinnerRing size={15} />
-            <span>Simulating…</span>
-            {onCancel && (
-                <button
-                type="button"
-                onClick={onCancel}
-                style={{
-                    background: "rgba(220,38,38,0.18)",
-                    border: "1px solid rgba(248,113,113,0.5)",
-                    borderRadius: "8px",
-                    color: "#fecaca",
-                    cursor: "pointer",
-                    fontSize: "0.74rem",
-                    fontWeight: 600,
-                    marginLeft: "0.2rem",
-                    padding: "0.28rem 0.7rem",
-                }}
-                >
-                Cancel
-                </button>
-            )}
-            </div>
-        )}
 
         {error && (
             <div
@@ -1469,7 +1519,17 @@ const DateWidget = ({
     };
 
     const eventLookup = useMemo(() => buildEventLookup(events), [events]);
-    const lookups = useMemo(() => ({ polityLookup, regionLookup }), [polityLookup, regionLookup]);
+    const lookups = useMemo(() => ({
+        playerCountry: {
+            code: gameData?.country || "",
+            name: worldState?.polityOverrides?.[gameData?.country]?.name
+                || polityLookup.get(gameData?.country)
+                || gameData?.country
+                || "",
+        },
+        polityLookup,
+        regionLookup,
+    }), [gameData?.country, polityLookup, regionLookup, worldState?.polityOverrides]);
 
     const historyRecords = useMemo(() => {
         const rawHistory = worldState?.simulationHistory ?? [];

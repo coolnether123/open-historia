@@ -215,6 +215,23 @@ const MessageBubble = ({ msg }) => {
             </div>
         )}
 
+        {isPlayer && msg.linkedEventTitle && (
+            <div style={{
+                background: "rgba(15,23,42,0.78)",
+                border: "1px solid rgba(147,197,253,0.28)",
+                borderRadius: "8px",
+                color: "rgba(219,234,254,0.9)",
+                fontSize: "0.7rem",
+                marginBottom: "0.3rem",
+                maxWidth: "100%",
+                padding: "0.38rem 0.55rem",
+            }}>
+            <span style={{ color: "rgba(147,197,253,0.72)" }}>Regarding </span>
+            {msg.linkedEventTitle}
+            {msg.linkedEventDate ? ` · ${formatGameDate(msg.linkedEventDate)}` : ""}
+            </div>
+        )}
+
         {/* Player-typed text stays verbatim under UI translation. */}
         <div data-no-translate={isPlayer ? "" : undefined} style={{
             padding: "0.6rem 0.85rem",
@@ -368,7 +385,7 @@ const CountryTile = ({ country, code, flag, isSelected, onToggle }) => {
     );
 };
 
-const CountrySelectorModal = ({ countries, loading, onStart, onCancel }) => {
+const CountrySelectorModal = ({ countries, linkedEvent, loading, onStart, onCancel }) => {
     const [search, setSearch]     = React.useState("");
     const [selected, setSelected] = React.useState([]);
     const filtered      = useMemo(() => countries.filter(c => c.name.toLowerCase().includes(search.toLowerCase())), [countries, search]);
@@ -382,8 +399,10 @@ const CountrySelectorModal = ({ countries, loading, onStart, onCancel }) => {
         <div style={{ padding: "1.1rem 1.25rem 0.6rem", flexShrink: 0 }}>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
         <div>
-        <div style={{ fontWeight: 700, fontSize: "1.05rem", color: "white" }}>Start New Diplomatic Chat</div>
-        <div style={{ fontSize: "0.78rem", color: "rgba(255,255,255,0.4)", marginTop: "0.2rem" }}>Select countries to invite to the conversation</div>
+        <div style={{ fontWeight: 700, fontSize: "1.05rem", color: "white" }}>{linkedEvent ? "Discuss this event" : "Start New Diplomatic Chat"}</div>
+        <div style={{ fontSize: "0.78rem", color: "rgba(255,255,255,0.4)", marginTop: "0.2rem" }}>
+        {linkedEvent ? `Choose who to contact about “${linkedEvent.title}”.` : "Select countries to invite to the conversation"}
+        </div>
         </div>
         <button onClick={onCancel} style={{ background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.5)", fontSize: "1.1rem", padding: "0.1rem 0.3rem", borderRadius: "6px", lineHeight: 1 }}
         onMouseEnter={e => { e.currentTarget.style.color = "white"; e.currentTarget.style.background = "rgba(255,255,255,0.08)"; }}
@@ -426,7 +445,7 @@ const CountrySelectorModal = ({ countries, loading, onStart, onCancel }) => {
 
 // ── Conversation view ─────────────────────────────────────────────────────────
 
-const ConversationView = ({ chat, playerCountry, gameDate, onDelete, onBack, onMessagesUpdate }) => {
+const ConversationView = ({ chat, playerCountry, gameDate, linkedEvent, onDelete, onBack, onLinkedEventConsumed, onMessagesUpdate }) => {
     // Two-step delete, matching the list row. Disarms on blur so a half-pressed
     // delete never sits waiting to catch a later click.
     const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -448,6 +467,7 @@ const ConversationView = ({ chat, playerCountry, gameDate, onDelete, onBack, onM
 
     const nextSpeakerIdx    = useRef(0);
     const lastPlayerMessage = useRef("");
+    const lastPlayerEvent   = useRef(null);
     const messagesEndRef    = useRef(null);
     const messagesRef       = useRef(chat.messages ?? []);
 
@@ -474,7 +494,7 @@ const ConversationView = ({ chat, playerCountry, gameDate, onDelete, onBack, onM
 
         const isPlayerCountry = (country) => countryMatchesIdentity(country, playerCountry);
 
-        const fetchLeaderResponse = async (country, playerMessage, queueAfter) => {
+        const fetchLeaderResponse = async (country, playerMessage, queueAfter, messageEvent = null) => {
             if (isPlayerCountry(country)) {
                 setPendingCountry(null);
                 setRemainingQueue([]);
@@ -484,7 +504,7 @@ const ConversationView = ({ chat, playerCountry, gameDate, onDelete, onBack, onM
             setIsLoading(true);
             setSpeakingCountry(country);
             try {
-                const { reply, reaction } = await sendDiplomaticMessage(playerMessage, country.name, countries);
+                const { reply, reaction } = await sendDiplomaticMessage(playerMessage, country.name, countries, { linkedEvent: messageEvent });
 
                 if (reaction) {
                     const msgs = [...messagesRef.current];
@@ -575,9 +595,17 @@ const ConversationView = ({ chat, playerCountry, gameDate, onDelete, onBack, onM
             const text = playerInput.trim();
             if (!text || isLoading) return;
             lastPlayerMessage.current = text;
-            const nextMessages = [...messagesRef.current, { role: "user", speaker: playerCountry, text, time: gameDate }];
+            lastPlayerEvent.current = linkedEvent;
+            const eventLink = linkedEvent ? {
+                linkedEventDate: linkedEvent.date || "",
+                linkedEventDescription: linkedEvent.description || "",
+                linkedEventId: linkedEvent.id || "",
+                linkedEventTitle: linkedEvent.title || "",
+            } : {};
+            const nextMessages = [...messagesRef.current, { role: "user", speaker: playerCountry, text, time: gameDate, ...eventLink }];
             pushMessages(nextMessages);
             setPlayerInput("");
+            onLinkedEventConsumed?.();
             const queue = await buildResponsiveQueue(nextMessages);
             if (queue.length === 0) {
                 pushMessages([...nextMessages, { role: "error", speaker: "System", text: "This chat has no valid participants.", time: gameDate }]);
@@ -586,7 +614,7 @@ const ConversationView = ({ chat, playerCountry, gameDate, onDelete, onBack, onM
             if (isGroup) {
                 offerNextCountry(queue);
             } else {
-                await fetchLeaderResponse(queue[0], text, []);
+                await fetchLeaderResponse(queue[0], text, [], linkedEvent);
             }
         };
 
@@ -601,7 +629,7 @@ const ConversationView = ({ chat, playerCountry, gameDate, onDelete, onBack, onM
             const rest    = remainingQueue;
             setPendingCountry(null);
             setRemainingQueue([]);
-            await fetchLeaderResponse(country, lastPlayerMessage.current, rest);
+            await fetchLeaderResponse(country, lastPlayerMessage.current, rest, lastPlayerEvent.current);
         };
 
         const typingSpeaker = speakingCountry ?? countries[0];
@@ -664,7 +692,16 @@ const ConversationView = ({ chat, playerCountry, gameDate, onDelete, onBack, onM
                 </div>
                 </div>
             ) : phase === "player" && !isLoading ? (
-                <div style={{ padding: "1rem", borderTop: "1px solid rgba(255,255,255,0.1)", display: "flex", alignItems: "center", gap: "0.5rem", flexShrink: 0 }}>
+                <div style={{ padding: "0.75rem 1rem 1rem", borderTop: "1px solid rgba(255,255,255,0.1)", display: "flex", flexDirection: "column", gap: "0.5rem", flexShrink: 0 }}>
+                {linkedEvent && (
+                    <div style={{ alignItems: "center", background: "rgba(59,130,246,0.1)", border: "1px solid rgba(96,165,250,0.25)", borderRadius: "8px", display: "flex", gap: "0.5rem", padding: "0.42rem 0.55rem" }}>
+                    <span style={{ color: "rgba(191,219,254,0.78)", flex: 1, fontSize: "0.72rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    Regarding: {linkedEvent.title}
+                    </span>
+                    <button type="button" aria-label="Remove event link" onClick={onLinkedEventConsumed} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.55)", cursor: "pointer", fontSize: "0.9rem", padding: "0 0.2rem" }}>✕</button>
+                    </div>
+                )}
+                <div style={{ alignItems: "center", display: "flex", gap: "0.5rem" }}>
                 <textarea
                 placeholder="Send a diplomatic message…"
                 rows={1} value={playerInput}
@@ -680,6 +717,7 @@ const ConversationView = ({ chat, playerCountry, gameDate, onDelete, onBack, onM
                 onMouseEnter={e => { if (playerInput.trim()) e.currentTarget.style.backgroundColor = "#2563eb"; }}
                 onMouseLeave={e => { if (playerInput.trim()) e.currentTarget.style.backgroundColor = "#3b82f6"; }}
                 >🚀</button>
+                </div>
                 </div>
             ) : null}
             </>
@@ -778,9 +816,9 @@ const ChatListItem = ({ chat, onClick, onDelete, unread = false }) => {
 
 // Bridge so the map region popup can request a diplomatic chat with a country.
 const _chatOpenSubs = new Set();
-export const requestDiplomaticChat = (country) => {
-    if (!country || !country.name) return;
-    _chatOpenSubs.forEach((fn) => { try { fn(country); } catch { /* noop */ } });
+export const requestDiplomaticChat = (country, { linkedEvent = null } = {}) => {
+    if (!country?.name && !linkedEvent) return;
+    _chatOpenSubs.forEach((fn) => { try { fn({ country, linkedEvent }); } catch { /* noop */ } });
 };
 
 const ChatPanel = ({ isOpen, onClose, requestedCountry, onConsumeRequest }) => {
@@ -791,6 +829,7 @@ const ChatPanel = ({ isOpen, onClose, requestedCountry, onConsumeRequest }) => {
     const [chats, setChats]                       = useState([]);
     const [activeChat, setActiveChat]             = useState(null);
     const [showSelector, setShowSelector]         = useState(false);
+    const [composerEvent, setComposerEvent]       = useState(null);
     const [hasLoadedInitialData, setHasLoadedInitialData] = useState(false);
     const openChats = chats.filter((chat) => chat.status !== "closed" && Array.isArray(chat.countries) && chat.countries.length > 0);
 
@@ -941,8 +980,15 @@ const ChatPanel = ({ isOpen, onClose, requestedCountry, onConsumeRequest }) => {
     };
 
     // Open (or reuse) a 1-on-1 chat with a country requested from the region popup.
-    const consumePending = (country) => {
+    const consumePending = (request) => {
+        const country = request?.country || request;
+        setComposerEvent(request?.linkedEvent || null);
         setShowSelector(false);
+        if (!country?.name) {
+            setActiveChat(null);
+            setShowSelector(true);
+            return;
+        }
         setChats(prev => {
             const existing = prev.find(
                 c => c.status !== "closed" && Array.isArray(c.countries) && c.countries.length === 1 &&
@@ -969,10 +1015,10 @@ const ChatPanel = ({ isOpen, onClose, requestedCountry, onConsumeRequest }) => {
             <MarkdownStyleInjector />
             <div style={{ position: "fixed", bottom: isOpen ? "4.25rem" : "-40rem", left: "0rem", width: "26.25rem", maxWidth: "calc(100vw - 1rem)", height: "min(calc(100vh - 9rem), max(calc(100vh - 33rem), 30rem))", minHeight: "10rem", backgroundColor: "rgba(17,24,39,0.95)", backdropFilter: "blur(8px)", borderRadius: "16px", border: "1px solid rgba(255,255,255,0.1)", boxShadow: "-4px 0 24px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,255,255,0.06)", zIndex: 9998, overflow: "hidden", transition: "bottom 0.35s cubic-bezier(0.4,0,0.2,1),opacity 0.35s ease", opacity: isOpen ? 1 : 0, pointerEvents: isOpen ? "auto" : "none", fontFamily: "sans-serif", color: "white", display: "flex", flexDirection: "column" }}>
 
-            {showSelector && <CountrySelectorModal countries={availableCountries} loading={loadingCountries} onStart={handleStartChat} onCancel={() => setShowSelector(false)} />}
+            {showSelector && <CountrySelectorModal countries={availableCountries} linkedEvent={composerEvent} loading={loadingCountries} onStart={handleStartChat} onCancel={() => { setShowSelector(false); setComposerEvent(null); }} />}
 
             {activeChat && Array.isArray(activeChat.countries) && activeChat.countries.length > 0 ? (
-                <ConversationView chat={activeChat} playerCountry={playerCountry} gameDate={gameDate} onDelete={() => handleDeleteChat(activeChat.id)} onBack={() => setActiveChat(null)} onMessagesUpdate={handleMessagesUpdate} />
+                <ConversationView chat={activeChat} playerCountry={playerCountry} gameDate={gameDate} linkedEvent={composerEvent} onDelete={() => handleDeleteChat(activeChat.id)} onBack={() => setActiveChat(null)} onLinkedEventConsumed={() => setComposerEvent(null)} onMessagesUpdate={handleMessagesUpdate} />
             ) : (
                 <>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "1rem 1.25rem 0.75rem", borderBottom: "1px solid rgba(255,255,255,0.07)", flexShrink: 0 }}>
@@ -989,7 +1035,7 @@ const ChatPanel = ({ isOpen, onClose, requestedCountry, onConsumeRequest }) => {
                 ) : orderedChats.map(chat => <ChatListItem key={chat.id} chat={chat} unread={unreadIds.has(String(chat.id))} onClick={() => openChatFromList(chat)} onDelete={() => handleDeleteChat(chat.id)} />)}
                 </div>
                 <div style={{ padding: "0.75rem 1rem", borderTop: "1px solid rgba(255,255,255,0.07)", flexShrink: 0 }}>
-                <button onClick={() => setShowSelector(true)} style={{ width: "100%", padding: "0.7rem", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.07)", color: "rgba(255,255,255,0.85)", fontSize: "0.85rem", fontWeight: 500, cursor: "pointer", fontFamily: "sans-serif" }}
+                <button onClick={() => { setComposerEvent(null); setShowSelector(true); }} style={{ width: "100%", padding: "0.7rem", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.07)", color: "rgba(255,255,255,0.85)", fontSize: "0.85rem", fontWeight: 500, cursor: "pointer", fontFamily: "sans-serif" }}
                 onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.12)"}
                 onMouseLeave={e => e.currentTarget.style.background = "rgba(255,255,255,0.07)"}>Start New Chat</button>
                 </div>

@@ -275,6 +275,7 @@ export const createDomesticPressureEvent = ({ world, game, date, round } = {}) =
   const template = DOMESTIC_EVENTS[templateIndex];
   const country = text(game?.country) || "the country";
   return {
+    countries: [{ code: country, name: country }],
     date: text(date || game?.gameDate),
     description: template.description(country),
     id: `domestic-pressure-${Math.max(1, Math.trunc(Number(round) || 1))}-${sequence + 1}`,

@@ -14,6 +14,7 @@ Every LLM call the game makes is a template in `src/Game/AI/defaultPrompts.json`
 | Task runner, call-time directives, validators, fallbacks, task entry points | `src/Game/AI/gameplay.js` | `runJsonTask`, `buildTemplateVariables`, `simulateTimelineJump`, etc. |
 | JSON Schemas + tools + payload validator | `src/Game/AI/gameplaySchemas.js` | `GAMEPLAY_SCHEMAS`, `GAMEPLAY_TOOLS`, `validateGameplayPayload` |
 | Provider dispatch, `callAI`, advisor/leader assembly | `src/Game/AI/main.jsx` | `callAI`, `buildAdvisorSystemPrompt`, `buildDiplomaticSystemPrompt` |
+| Shared player-facing writing directive | `src/Game/AI/writingQuality.js` | `AI_WRITING_QUALITY_DIRECTIVE`, appended by `callAI` |
 | Language directive (appended to *every* call) | `src/runtime/i18n.js` | `languageDirective` at line 137 |
 | Difficulty directive (appended to task + leader prompts) | `src/runtime/difficulty.js` | `difficultyDirective` at line 73 |
 | Where the active game's prompt overrides are read from | `src/runtime/assets.js:268` | `JSON_URLS.prompts = /api/runtime/json/prompts` |
@@ -59,8 +60,8 @@ Order of concatenation onto the system prompt:
 4. **+ Difficulty directive** — `\n\n${difficultyDirective(game.difficulty)}` for every task (`gameplay.js:400`).
 5. **+ Player Agency** and **+ Map Truth** — only `jumpForward`, `autoJumpForward` (`gameplay.js:411`–`420`).
 6. **+ International Reputation** — only `actions`, `jumpForward`, `autoJumpForward`, `catalystCreation`, `catalystExecutor` (`gameplay.js:425`).
-7. **Call `callAI(systemPrompt, [{role:"user", parts:[{text: userMessage}]}], { tool, maxTokens: 8192, ... })`.** Inside `callAI` (`main.jsx:942`): **+ Language directive** `\n\n${languageDirective()}` when the UI language ≠ English.
-8. **Provider layer** (`main.jsx`): native tool-use providers (Anthropic/OpenAI/Gemini) pass `tool.schema` as a tool; the JSON-schema fallback path appends `\n\nReturn only one JSON object matching this JSON Schema…\n${JSON.stringify(tool.schema)}` (`main.jsx:573`). `maxTokens` is floored at 8192 by capped providers; Gemini ignores it.
+7. **Call `callAI(systemPrompt, [{role:"user", parts:[{text: userMessage}]}], { tool, maxTokens: 8192, ... })`.** `callAI` appends `AI_WRITING_QUALITY_DIRECTIVE` to every request. The directive requires plain, specific prose and rejects common model-writing habits. `callAI` then appends `languageDirective()` when the UI language is not English.
+8. **Provider layer** (`main.jsx`): native tool-use providers pass `tool.schema` as a tool. The JSON-schema fallback path appends the schema and a JSON-only instruction. Providers use their model's output limit unless the caller supplies `maxTokens`.
 
 So the final task system prompt is:
 
@@ -69,6 +70,7 @@ So the final task system prompt is:
 \n\n<difficulty directive>
 [\n\n[Player Agency]…\n\n[Map Truth]…]        (jump tasks only)
 [\n\n[International Reputation]…]              (5 tasks only)
+\n\n<writing quality directive>                 (every call)
 \n\n<language directive>                        (non-English only)
 [\n\n Return only one JSON object … <schema>]  (json-schema fallback providers only)
 ```

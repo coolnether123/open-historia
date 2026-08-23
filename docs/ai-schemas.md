@@ -169,7 +169,7 @@ Also used for `autoJumpForward`. This is the largest task.
 | `catalyst` | `catalystSchema \| null` | Optional interactive scene | no |
 | `diplomaticOutreach` | `createdChatSchema[]` | Polities reaching out on their own initiative, not tied to any event | no |
 
-`eventSchema` (`:322`): `id`, `date`* , `title`* , `description`* , `importance`, `kind`, `notable` (bool), `playerRelated` (bool), `impacts` (`impactsSchema`).
+`eventSchema` (`:422`): `id`, `date`* , `title`* , `description`* , `countries`* (`chatCountrySchema[]`), `importance`, `kind`, `notable` (bool), `playerRelated` (bool), `impacts` (`impactsSchema`). The country list powers event-to-diplomacy links and must name every polity directly involved or materially affected.
 
 ### 4.8 `catalystSchema` (`:346`) and executor/summary
 

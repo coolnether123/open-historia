@@ -429,6 +429,13 @@ const eventSchema = {
     description: textSchema("Specific narrative description and consequences."),
     importance: textSchema("Importance label, normally minor or major."),
     kind: textSchema("Event category, such as world, player, diplomacy, or military."),
+    countries: {
+      type: "array",
+      description:
+        "Every polity directly involved in or materially affected by this event. "
+        + "Use exact polity names from the game state and include codes when known.",
+      items: chatCountrySchema,
+    },
     notable: {
       type: "boolean",
       description: "Whether this event is important enough to stop an automatic jump.",
@@ -439,7 +446,7 @@ const eventSchema = {
     },
     impacts: impactsSchema,
   },
-  required: ["date", "title", "description"],
+  required: ["date", "title", "description", "countries"],
   additionalProperties: false,
 };
 
@@ -540,8 +547,13 @@ const pregameEventSchema = {
     description: textSchema("Specific narrative description and its consequences."),
     importance: textSchema("Importance label, normally minor or major."),
     kind: textSchema("Event category, such as world, player, diplomacy, or military."),
+    countries: {
+      type: "array",
+      description: "Every polity directly involved in or materially affected by this event.",
+      items: chatCountrySchema,
+    },
   },
-  required: ["date", "title", "description"],
+  required: ["date", "title", "description", "countries"],
   additionalProperties: false,
 };
 

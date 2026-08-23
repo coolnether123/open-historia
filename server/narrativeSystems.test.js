@@ -65,6 +65,7 @@ test("domestic pressure becomes due, creates an open request, and reschedules", 
   });
   assert.equal(event.kind, "domestic");
   assert.equal(event.playerRelated, true);
+  assert.deepEqual(event.countries, [{ code: "Canada", name: "Canada" }]);
   assert.match(event.description, /Canada/);
   assert.match(event.description, /government|national/i);
 

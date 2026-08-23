@@ -379,6 +379,10 @@ const normalizeChatMessage = (message, index = 0) => {
     return {
       code: "",
       id: generateId(`message-${index}`),
+      linkedEventDate: "",
+      linkedEventDescription: "",
+      linkedEventId: "",
+      linkedEventTitle: "",
       reactions: {},
       role: "system",
       speaker: "",
@@ -399,6 +403,10 @@ const normalizeChatMessage = (message, index = 0) => {
   return {
     code: normalizeOptionalString(message.code),
     id: normalizeOptionalString(message.id) || generateId(`message-${index}`),
+    linkedEventDate: normalizeOptionalString(message.linkedEventDate),
+    linkedEventDescription: normalizeOptionalString(message.linkedEventDescription),
+    linkedEventId: normalizeOptionalString(message.linkedEventId || message.eventId),
+    linkedEventTitle: normalizeOptionalString(message.linkedEventTitle || message.eventTitle),
     reactions: normalizeReactionMap(message.reactions),
     role: normalizeOptionalString(message.role || message.sender) || "system",
     speaker: normalizeOptionalString(message.speaker || message.senderName),
@@ -818,6 +826,7 @@ export const normalizeEventEntry = (entry, index = 0) => {
     if (!title) return null;
 
     return {
+      countries: [],
       createdAt: new Date().toISOString(),
       date: "",
       description: "",
@@ -845,6 +854,9 @@ export const normalizeEventEntry = (entry, index = 0) => {
   }
 
   return {
+    countries: normalizeArray(entry.countries || entry.associatedCountries)
+      .map((country) => normalizeChatCountry(country))
+      .filter(Boolean),
     createdAt: normalizeOptionalString(entry.createdAt) || new Date().toISOString(),
     date: normalizeOptionalString(entry.date),
     description: normalizeOptionalString(entry.description || entry.summary || entry.text),
