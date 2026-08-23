@@ -448,6 +448,10 @@ const runJsonTask = async (taskKey, {
       systemPrompt = `${systemPrompt}\n\n[Domestic Pressure Due This Turn]\n${domesticContext}`;
     }
     systemPrompt = `${systemPrompt}\n\n[Player Agency]\n${playerName} is controlled by a human player. Never commit ${playerName} to a major decision the player did not actually make: do not sign treaties, alliances, ceasefires, surrenders, trade pacts, unions, or other binding agreements on the player's behalf, do not accept or reject offers for them, and do not have ${playerName} take landmark unilateral action (declaring war, ceding territory, changing government) unless it directly executes one of the player's planned actions, chat replies, or explicit requests. When another polity seeks such an agreement or decision from the player, present it as something the player can answer: a diplomaticOutreach entry or an impacts.createdChats chat where the counterpart speaks first and makes the proposal, or an event describing the offer as OPEN and awaiting the player's response. Events remain free to narrate what other polities do among themselves and to resolve the player's own queued actions exactly as ordered.`;
+    const controlledPolities = normalizeString(variables.controlledPolities);
+    if (controlledPolities) {
+      systemPrompt = `${systemPrompt}\n\n[Multiple human-controlled polities]\nThe human may switch countries without advancing time. Human-controlled polities recorded in this campaign: ${controlledPolities}. Every planned action prefixed with [Issued by COUNTRY] is an instruction from that named country, even when COUNTRY is not the current player polity. Execute each instruction as its named issuer and keep all consequences in the same timeline. The current player polity names the active viewpoint only. Never reassign an order to that viewpoint. Chat messages remain attributable to their saved speaker. Do not invent new decisions for any human-controlled polity.`;
+    }
     // Map truth: the recurring field report is the OPPOSITE failure — invasions
     // narrated turn after turn with zero regionTransfers, so the map never moves.
     // Appended at call time for the same reason as [Player Agency]: existing
@@ -823,12 +827,14 @@ const fallbackActionSuggestions = async (bundle) => {
     const recentTitle = recentTitles[index];
     const actions = [
       normalizeActionEntry({
+        country: bundle.game.country,
         kind: "action",
         source: "suggested",
         text: `Issue a concrete order addressing ${recentTitle || topic.title.toLowerCase()} and assign a responsible ministry or command.`,
         title: recentTitle ? `Respond to ${recentTitle}` : `Act on ${topic.title}`,
       }),
       normalizeActionEntry({
+        country: bundle.game.country,
         kind: "action",
         source: "suggested",
         text: `Prepare a second-order measure that protects ${bundle.game.country || "the polity"} if this line of effort triggers resistance.`,
@@ -921,6 +927,7 @@ export const buildGeneratedChat = async (chatLike, linkEventId, world, { fallbac
     ?? countries[0];
 
   const entry = normalizeChatEntry({
+    controlledCountries: playerName ? [playerName] : [],
     countries,
     id: chatLike?.id,
     linkedEventId: linkEventId,
@@ -1627,6 +1634,7 @@ export const generateActionSuggestions = async ({ force = true } = {}) => {
               normalizeActionEntry(
                 {
                   ...action,
+                  country: bundle.game.country,
                   source: "suggested",
                   suggestionTopic: title,
                 },
@@ -1792,6 +1800,7 @@ export const refinePlayerAction = async (rawInput, { persist = true } = {}) => {
   const invitees = normalizeArray(payload?.invitees).map((entry) => normalizeString(entry)).filter(Boolean);
   const action = normalizeActionEntry({
     chatStarter: normalizeString(payload?.chatStarter),
+    country: bundle.game.country,
     invitees,
     kind: normalizeString(payload?.kind).toLowerCase() === "chat" ? "chat" : "action",
     rawInput,

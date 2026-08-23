@@ -2,7 +2,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
     JSON_URLS,
-    loadCountryNames,
     loadRegionCatalog,
     readJson,
     writeJson,
@@ -16,6 +15,8 @@ import {
     writeWorldState,
 } from "../../runtime/gameState.js";
 import COUNTRY_NAMES from "../../runtime/generated/countryNames.js";
+import { loadPlayablePolities } from "../../runtime/playablePolities.js";
+import { switchPlayerCountry } from "../../runtime/playerCountry.js";
 import { DIFFICULTY_LEVELS, normalizeDifficulty } from "../../runtime/difficulty.js";
 import { applyGameMasterCommand } from "../AI/gameplay.js";
 import { setRegionClickInterceptor } from "../Selection/Regions.jsx";
@@ -94,62 +95,6 @@ const rgbToHex = (rgb) =>
         ? `#${rgb.map((part) => Math.max(0, Math.min(255, Math.round(part))).toString(16).padStart(2, "0")).join("")}`
         : "#888888";
 
-// The countries that ACTUALLY exist in the current game — enumerated from the map,
-// not a fixed world list. Every defined polity, every current region owner, and the
-// owners of the rendered geometry (the scenario's own custom regions when it has
-// them, else the stock catalog), each resolved to its display NAME. On a fantasy
-// map this yields the invented nations only, never real-Earth countries; a country
-// you just created shows up too (it's in polityOverrides).
-const loadPolities = async () => {
-    const world = await readWorldState({ force: true });
-    const overrides = world.regionOwnershipOverrides ?? {};
-    const polityOverrides = world.polityOverrides ?? {};
-
-    // identifier -> display name (stock ISO names first, era/custom polity names win).
-    const nameByCode = new Map();
-    for (const entry of (await loadCountryNames().catch(() => [])) ?? []) {
-        if (entry?.code) nameByCode.set(String(entry.code), entry.name || String(entry.code));
-    }
-    for (const [code, polity] of Object.entries(polityOverrides)) {
-        if (code && polity?.name) nameByCode.set(String(code), polity.name);
-    }
-
-    const owners = new Set();
-    for (const code of Object.keys(polityOverrides)) if (code) owners.add(String(code));
-    for (const owner of Object.values(overrides)) if (owner) owners.add(String(owner));
-    for (const code of world.ownerCodes ?? []) if (code) owners.add(String(code));
-
-    // Owners of the actually-rendered geometry, with current overrides applied: the
-    // scenario's own custom regions when present, otherwise the stock GADM catalog.
-    const custom = await readJson(JSON_URLS.regionsGeojson, { defaultValue: null }).catch(() => null);
-    // Owners are country NAMES. Both fallback tails below reach for the region's
-    // GADM provenance, which is a code — so this set used to be a mix of "Russia"
-    // and "RUS" depending only on whether a given region had an override, and the
-    // two never compared equal. Resolve the code to its name at ingest so the set
-    // is one namespace.
-    if (Array.isArray(custom?.features) && custom.features.length) {
-        for (const feature of custom.features) {
-            const props = feature?.properties ?? {};
-            const id = props.id != null ? String(props.id) : "";
-            const gid0 = props.gid0 ? String(props.gid0) : "";
-            const owner = overrides[id] ?? props.owner ?? COUNTRY_NAMES[gid0] ?? gid0;
-            if (owner) owners.add(String(owner));
-        }
-    } else {
-        for (const region of await loadRegionCatalog().catch(() => [])) {
-            const code = region.countryCode ? String(region.countryCode) : "";
-            const owner = overrides[region.id] ?? COUNTRY_NAMES[code] ?? code;
-            if (owner) owners.add(String(owner));
-        }
-    }
-
-    const polities = Array.from(owners)
-        .filter((code) => code && code.toLowerCase() !== "unclaimed")
-        .map((code) => ({ code, name: nameByCode.get(code) || code }))
-        .sort((a, b) => a.name.localeCompare(b.name));
-    return { polities, world };
-};
-
 const PolitySelect = ({ polities, value, onChange, placeholder = "Pick a country…" }) => (
     <select value={value} onChange={(event) => onChange(event.target.value)} style={{ ...inputStyle, cursor: "pointer" }}>
     <option value="">{placeholder}</option>
@@ -174,8 +119,8 @@ const CheatsPanel = ({ open, onClose, onOpenForces }) => {
 
     const refresh = async () => {
         try {
-            const [{ polities: nextPolities }, nextGame] = await Promise.all([
-                loadPolities(),
+            const [nextPolities, nextGame] = await Promise.all([
+                loadPlayablePolities(),
                 readGameData({ force: true }),
             ]);
             setPolities(nextPolities);
@@ -496,8 +441,7 @@ const ToolView = ({ tool, header, busy, status, game, polities, refresh, runBusy
             type="button"
             disabled={busy || !target}
             onClick={() => runBusy(async () => {
-                const current = await readGameData({ force: true });
-                await writeGameData({ ...current, country: target });
+                await switchPlayerCountry(target);
                 await refresh();
                 return `You now lead ${nameOf(target)}.`;
             })}

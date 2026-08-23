@@ -229,6 +229,7 @@ export const normalizeActionEntry = (entry, index = 0) => {
 
   return {
     chatStarter: normalizeOptionalString(entry.chatStarter || entry.openingMessage),
+    country: normalizeOptionalString(entry.country || entry.actor || entry.polity),
     createdAt: normalizeOptionalString(entry.createdAt) || new Date().toISOString(),
     id: normalizeOptionalString(entry.id) || generateId(`action-${index}`),
     invitees: normalizeActionParticipants(entry.invitees),
@@ -458,6 +459,7 @@ export const normalizeChatEntry = (entry, index = 0) => {
   if (countries.length === 0) return null;
 
   return {
+    controlledCountries: normalizeActionParticipants(entry.controlledCountries || entry.playerCountries),
     countries,
     id: normalizeOptionalString(entry.id) || generateId(`chat-${index}`),
     linkedEventId: normalizeOptionalString(entry.linkedEventId || entry.eventId),

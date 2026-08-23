@@ -19,6 +19,8 @@ import {
     readGameData,
     readWorldState,
 } from "../../runtime/gameState.js";
+import { loadPlayablePolities } from "../../runtime/playablePolities.js";
+import { switchPlayerCountry } from "../../runtime/playerCountry.js";
 import { setWorldStateOverride } from "../Map/useWorldState.js";
 import { setUnitsOverride } from "../Map/unitsController.js";
 import { useIsMobile } from "../../runtime/useIsMobile.js";
@@ -1286,10 +1288,12 @@ const DateWidget = ({
     const [worldState, setWorldState] = useState(null);
     const [countryBounds, setCountryBounds] = useState(new Map());
     const [polityLookup, setPolityLookup] = useState(new Map());
+    const [playablePolities, setPlayablePolities] = useState([]);
     const [regionBounds, setRegionBounds] = useState(new Map());
     const [regionLookup, setRegionLookup] = useState(new Map());
     const [localOpenPanel, setLocalOpenPanel] = useState(null);
     const [isLoading, setIsLoading] = useState(false);
+    const [isSwitchingCountry, setIsSwitchingCountry] = useState(false);
     const [error, setError] = useState("");
     const [fallbackWarning, setFallbackWarning] = useState("");
     // Holds the in-flight jump's AbortController so the Cancel button can stop it.
@@ -1315,11 +1319,12 @@ const DateWidget = ({
 
         const loadLookups = async () => {
             try {
-                const [countries, regions, nextCountryBounds, nextRegionBounds] = await Promise.all([
+                const [countries, regions, nextCountryBounds, nextRegionBounds, nextPlayablePolities] = await Promise.all([
                     loadCountryNames(),
                                                                                                     loadRegionCatalog(),
                                                                                                     loadCountryBounds(),
                                                                                                     loadRegionBounds(),
+                                                                                                    loadPlayablePolities(),
                 ]);
 
                 if (cancelled) {
@@ -1328,6 +1333,7 @@ const DateWidget = ({
 
                 setCountryBounds(nextCountryBounds);
                 setPolityLookup(new Map((countries ?? []).map((entry) => [entry.code, entry.name])));
+                setPlayablePolities(nextPlayablePolities);
                 setRegionBounds(nextRegionBounds);
                 setRegionLookup(new Map((regions ?? []).map((entry) => [entry.id, entry])));
             } catch (lookupError) {
@@ -1579,6 +1585,35 @@ const DateWidget = ({
     const currentDate = hasValidGameDate
     ? parsedGameDate.format("YYYY-MM-DD")
     : dayjs().format("YYYY-MM-DD");
+    const countryOptions = Array.from(new Map([
+        ...playablePolities,
+        ...(worldState?.ownerCodes ?? []).map((code) => ({
+            code: String(code),
+            name: worldState?.polityOverrides?.[code]?.name || polityLookup.get(code) || String(code),
+        })),
+        ...(playerCountryCode ? [{ code: playerCountryCode, name: playerCountry }] : []),
+    ]
+        .filter((polity) => polity.code && !["na", "unclaimed"].includes(polity.code.toLowerCase()))
+        .map((polity) => [polity.code, polity])).values())
+        .sort((left, right) => left.name.localeCompare(right.name));
+
+    const handleCountrySwitch = async (event) => {
+        const country = event.target.value;
+        if (!country || country === playerCountryCode || isLoading || isSwitchingCountry) return;
+        const previous = gameData;
+        setIsSwitchingCountry(true);
+        setError("");
+        setGameData((current) => ({ ...current, country }));
+        try {
+            const nextGame = await switchPlayerCountry(country);
+            setGameData(nextGame);
+        } catch (switchError) {
+            setGameData(previous);
+            setError(switchError.message || "Could not switch countries.");
+        } finally {
+            setIsSwitchingCountry(false);
+        }
+    };
 
     useEffect(() => {
         setVisibleEventCount(1);
@@ -1759,20 +1794,39 @@ const DateWidget = ({
         <div style={{ alignItems: "center", display: "flex", flex: 1, flexDirection: "column", justifyContent: "center", minWidth: 0 }}>
         {playerCountry ? (
             <div style={{ alignItems: "baseline", display: "flex", gap: "0.5rem", justifyContent: "center", maxWidth: "100%", minWidth: 0 }}>
-            <span
+            <select
+            aria-label="Play as country"
+            disabled={isLoading || isSwitchingCountry}
+            onChange={handleCountrySwitch}
+            title={isLoading ? "Wait for the current turn to finish" : "Switch the country you control"}
+            value={playerCountryCode}
             style={{
+                appearance: "none",
+                background: "transparent",
+                border: 0,
                 color: "rgba(147,197,253,0.88)",
+                cursor: isLoading || isSwitchingCountry ? "not-allowed" : "pointer",
                 fontSize: isMobile ? "0.68rem" : "0.8rem",
                 fontWeight: 700,
+                fontFamily: "sans-serif",
                 letterSpacing: "0.05em",
                 minWidth: 0,
+                outline: "none",
                 overflow: "hidden",
+                padding: 0,
                 textOverflow: "ellipsis",
                 textTransform: "uppercase",
                 whiteSpace: "nowrap",
             }}
             >
-            {playerCountry}
+            {countryOptions.map((polity) => (
+                <option key={polity.code} value={polity.code} style={{ background: "#111827", color: "white" }}>
+                {polity.name}
+                </option>
+            ))}
+            </select>
+            <span aria-hidden="true" style={{ color: "rgba(147,197,253,0.62)", display: "flex", flexShrink: 0, marginLeft: "-0.3rem", pointerEvents: "none" }}>
+            <ChevronDownIcon />
             </span>
             <span style={{ color: "rgba(255,255,255,0.94)", flexShrink: 0, fontSize: isMobile ? "0.82rem" : "0.95rem", letterSpacing: "0.02em", whiteSpace: "nowrap" }}>
             {displayDate}

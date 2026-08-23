@@ -19,6 +19,7 @@ import {
   writeActionsState,
   normalizeUnitEntry,
 } from "../../runtime/gameState.js";
+import { PLAYER_COUNTRY_CHANGED_EVENT } from "../../runtime/playerCountry.js";
 import { resolveClash, distanceKm, engagementRangeKm, moveLeashKm } from "./unitCombat.js";
 
 let units = [];
@@ -28,6 +29,7 @@ let gameDate = "";
 let allowedUnitTypes = null; // null = all types allowed; else the scenario's whitelist
 let interactionMode = { kind: "idle" }; // idle | deploy | move | attack
 let pollTimer = null;
+let countryChangeHandler = null;
 let busy = false; // suppress poll overwrite mid-commit
 
 const listeners = new Set();
@@ -91,9 +93,18 @@ export const startUnitsSync = () => {
   if (pollTimer) return () => {};
   refresh();
   pollTimer = setInterval(refresh, 5000);
+  countryChangeHandler = (event) => {
+    const country = String(event.detail?.country ?? "").trim();
+    if (!country) return;
+    playerCode = country;
+    emit();
+  };
+  window.addEventListener(PLAYER_COUNTRY_CHANGED_EVENT, countryChangeHandler);
   return () => {
     clearInterval(pollTimer);
     pollTimer = null;
+    window.removeEventListener(PLAYER_COUNTRY_CHANGED_EVENT, countryChangeHandler);
+    countryChangeHandler = null;
   };
 };
 
@@ -123,6 +134,7 @@ const queueOrder = async (text, unitRevert = null) => {
     const actions = await readActionsState({ force: true });
     actions.push({
       kind: "action",
+      country: playerCode,
       source: "order",
       status: "planned",
       text,

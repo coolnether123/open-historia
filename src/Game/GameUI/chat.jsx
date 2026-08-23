@@ -15,6 +15,7 @@ import { flagEmojiFromGid } from "../../runtime/countryFlags.js";
 import { readChatsState, writeChatsState } from "../../runtime/gameState.js";
 import { formatGameDate } from "../../runtime/gameDate.js";
 import { getProviderSettings, getStoredProvider } from "../AI/providerConfig.js";
+import { PLAYER_COUNTRY_CHANGED_EVENT } from "../../runtime/playerCountry.js";
 
 // ── Storage ───────────────────────────────────────────────────────────────────
 
@@ -147,6 +148,26 @@ const ThinkingDots = () => {
         </span>
     );
 };
+
+const chatParticipants = (chat) => {
+    const participants = new Map();
+    const add = (entry) => {
+        const country = typeof entry === "string" ? { code: "", name: entry } : entry;
+        const name = String(country?.name || country?.code || "").trim();
+        if (!name) return;
+        const key = name.toLowerCase();
+        if (!participants.has(key)) participants.set(key, { code: country?.code || "", name });
+    };
+    (chat?.countries ?? []).forEach(add);
+    (chat?.controlledCountries ?? []).forEach(add);
+    (chat?.messages ?? []).forEach((message) => {
+        if (message?.speaker) add({ code: message.code || "", name: message.speaker });
+    });
+    return Array.from(participants.values());
+};
+
+const chatCounterparts = (chat, playerCountry) =>
+    chatParticipants(chat).filter((country) => !countryMatchesIdentity(country, playerCountry));
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
 
@@ -460,10 +481,8 @@ const ConversationView = ({ chat, playerCountry, gameDate, linkedEvent, replySta
     // delete never sits waiting to catch a later click.
     const [confirmingDelete, setConfirmingDelete] = useState(false);
     const countries = useMemo(
-        () => Array.isArray(chat?.countries)
-            ? chat.countries.filter((country) => country && (country.name || country.code))
-            : [],
-        [chat?.countries],
+        () => chatCounterparts(chat, playerCountry),
+        [chat, playerCountry],
     );
     const isGroup = countries.length > 1;
 
@@ -582,6 +601,7 @@ const ConversationView = ({ chat, playerCountry, gameDate, linkedEvent, replySta
             const suggestedSpeaker = await chooseNextDiplomaticSpeaker({
                 chat: {
                     ...chat,
+                    countries,
                     messages: updatedMessages,
                 },
                 excludeSpeaker: updatedMessages.at(-1)?.speaker || updatedMessages.at(-1)?.role || "",
@@ -833,16 +853,17 @@ const isChatUnread = (chat, seen) => {
 
 // ── Chat list item ────────────────────────────────────────────────────────────
 
-const ChatListItem = ({ chat, onClick, onDelete, unread = false }) => {
+const ChatListItem = ({ chat, playerCountry, onClick, onDelete, unread = false }) => {
     const [hovered, setHovered] = React.useState(false);
     // Deleting a chat is not undoable, so the bin arms first and deletes on the
     // second click. Resets whenever the pointer leaves the row, so a half-pressed
     // delete never sits waiting to catch a later click.
     const [confirming, setConfirming] = React.useState(false);
-    const previewCountries = chat.countries.slice(0, 4);
+    const countries = chatCounterparts(chat, playerCountry);
+    const previewCountries = countries.slice(0, 4);
     const flagMap  = useCountryFlags(previewCountries);
     const flags    = previewCountries.map(c => flagMap[c.name] ?? "🏳").join(" ");
-    const names    = chat.countries.map(c => c.name).join(", ");
+    const names    = countries.map(c => c.name).join(", ") || "No other participants";
     const lastMsg  = chat.messages?.at(-1);
     const preview  = lastMsg ? lastMsg.text.replace(/\*\*/g, "").slice(0, 60) + (lastMsg.text.length > 60 ? "…" : "") : "No messages yet";
 
@@ -892,7 +913,7 @@ const ChatPanel = ({ isOpen, onClose, requestedCountry, onConsumeRequest }) => {
     const [composerEvent, setComposerEvent]       = useState(null);
     const [replyStates, setReplyStates]           = useState({});
     const [hasLoadedInitialData, setHasLoadedInitialData] = useState(false);
-    const openChats = chats.filter((chat) => chat.status !== "closed" && Array.isArray(chat.countries) && chat.countries.length > 0);
+    const openChats = chats.filter((chat) => chat.status !== "closed" && chatCounterparts(chat, playerCountry).length > 0);
 
     // Which chats to flag as unread, snapshotted when the panel OPENS and held
     // until it closes — rows must not reshuffle under the cursor while the player
@@ -960,9 +981,17 @@ const ChatPanel = ({ isOpen, onClose, requestedCountry, onConsumeRequest }) => {
 
         go();
         const iv = setInterval(go, 5000);
+        const handleCountryChanged = (event) => {
+            const country = event.detail?.country;
+            if (!country) return;
+            setPlayerCountry(country);
+            setActiveChat((active) => active && chatCounterparts(active, country).length === 0 ? null : active);
+        };
+        window.addEventListener(PLAYER_COUNTRY_CHANGED_EVENT, handleCountryChanged);
         return () => {
             cancelled = true;
             clearInterval(iv);
+            window.removeEventListener(PLAYER_COUNTRY_CHANGED_EVENT, handleCountryChanged);
         };
     }, [isOpen]);
 
@@ -1007,9 +1036,23 @@ const ChatPanel = ({ isOpen, onClose, requestedCountry, onConsumeRequest }) => {
 
     const handleMessagesUpdate = (chatId, newMessages) => {
         setChats(prev => {
-            const updated = prev.map(c => c.id === chatId ? { ...c, messages: newMessages } : c);
+            const updated = prev.map((chat) => {
+                if (chat.id !== chatId) return chat;
+                const controlledCountries = Array.from(new Set([
+                    ...(chat.controlledCountries ?? []),
+                    playerCountry,
+                ].filter(Boolean)));
+                return { ...chat, controlledCountries, messages: newMessages };
+            });
             saveAllChats(updated);
-            setActiveChat(ac => ac?.id === chatId ? { ...ac, messages: newMessages } : ac);
+            setActiveChat((active) => {
+                if (active?.id !== chatId) return active;
+                const controlledCountries = Array.from(new Set([
+                    ...(active.controlledCountries ?? []),
+                    playerCountry,
+                ].filter(Boolean)));
+                return { ...active, controlledCountries, messages: newMessages };
+            });
             return updated;
         });
     };
@@ -1026,7 +1069,7 @@ const ChatPanel = ({ isOpen, onClose, requestedCountry, onConsumeRequest }) => {
     };
 
     const handleStartChat = (selected) => {
-        const newChat = { id: Date.now(), countries: selected, messages: [], status: "open" };
+        const newChat = { id: Date.now(), controlledCountries: [playerCountry], countries: selected, messages: [], status: "open" };
         setChats(prev => { const u = [newChat, ...prev]; saveAllChats(u); return u; });
         setShowSelector(false);
         setActiveChat(newChat);
@@ -1062,12 +1105,13 @@ const ChatPanel = ({ isOpen, onClose, requestedCountry, onConsumeRequest }) => {
             return;
         }
         setChats(prev => {
-            const existing = prev.find(
-                c => c.status !== "closed" && Array.isArray(c.countries) && c.countries.length === 1 &&
-                     (c.countries[0]?.name || "").toLowerCase() === country.name.toLowerCase(),
-            );
+            const existing = prev.find((chat) => {
+                const counterparts = chatCounterparts(chat, playerCountry);
+                return chat.status !== "closed" && counterparts.length === 1
+                    && counterparts[0].name.toLowerCase() === country.name.toLowerCase();
+            });
             if (existing) { setActiveChat(existing); return prev; }
-            const newChat = { id: Date.now(), countries: [{ name: country.name, code: country.code || "" }], messages: [], status: "open" };
+            const newChat = { id: Date.now(), controlledCountries: [playerCountry], countries: [{ name: country.name, code: country.code || "" }], messages: [], status: "open" };
             const u = [newChat, ...prev];
             saveAllChats(u);
             setActiveChat(newChat);
@@ -1090,7 +1134,7 @@ const ChatPanel = ({ isOpen, onClose, requestedCountry, onConsumeRequest }) => {
             {showSelector && <CountrySelectorModal countries={availableCountries} linkedEvent={composerEvent} loading={loadingCountries} onStart={handleStartChat} onCancel={() => { setShowSelector(false); setComposerEvent(null); }} />}
 
             {activeChat && Array.isArray(activeChat.countries) && activeChat.countries.length > 0 ? (
-                <ConversationView key={activeChat.id} chat={activeChat} playerCountry={playerCountry} gameDate={gameDate} linkedEvent={composerEvent} replyState={replyStates[String(activeChat.id)]} onDelete={() => handleDeleteChat(activeChat.id)} onBack={() => setActiveChat(null)} onLinkedEventConsumed={() => setComposerEvent(null)} onMessagesUpdate={handleMessagesUpdate} onReplyStateChange={handleReplyStateChange} />
+                <ConversationView key={`${activeChat.id}:${playerCountry}`} chat={activeChat} playerCountry={playerCountry} gameDate={gameDate} linkedEvent={composerEvent} replyState={replyStates[String(activeChat.id)]} onDelete={() => handleDeleteChat(activeChat.id)} onBack={() => setActiveChat(null)} onLinkedEventConsumed={() => setComposerEvent(null)} onMessagesUpdate={handleMessagesUpdate} onReplyStateChange={handleReplyStateChange} />
             ) : (
                 <>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "1rem 1.25rem 0.75rem", borderBottom: "1px solid rgba(255,255,255,0.07)", flexShrink: 0 }}>
@@ -1104,7 +1148,7 @@ const ChatPanel = ({ isOpen, onClose, requestedCountry, onConsumeRequest }) => {
                     <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.25)", fontSize: "0.82rem", fontStyle: "italic", textAlign: "center", padding: "2rem" }}>
                     No diplomatic conversations yet.<br />Start one below.
                     </div>
-                ) : orderedChats.map(chat => <ChatListItem key={chat.id} chat={chat} unread={unreadIds.has(String(chat.id))} onClick={() => openChatFromList(chat)} onDelete={() => handleDeleteChat(chat.id)} />)}
+                ) : orderedChats.map(chat => <ChatListItem key={chat.id} chat={chat} playerCountry={playerCountry} unread={unreadIds.has(String(chat.id))} onClick={() => openChatFromList(chat)} onDelete={() => handleDeleteChat(chat.id)} />)}
                 </div>
                 <div style={{ padding: "0.75rem 1rem", borderTop: "1px solid rgba(255,255,255,0.07)", flexShrink: 0 }}>
                 <button onClick={() => { setComposerEvent(null); setShowSelector(true); }} style={{ width: "100%", padding: "0.7rem", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.07)", color: "rgba(255,255,255,0.85)", fontSize: "0.85rem", fontWeight: 500, cursor: "pointer", fontFamily: "sans-serif" }}

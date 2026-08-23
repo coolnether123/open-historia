@@ -4,6 +4,7 @@ import dayjs from "dayjs";
 import advancedFormat from "dayjs/plugin/advancedFormat";
 import { JSON_URLS, readJson } from "../../runtime/assets.js";
 import { useCountryDisplayName } from "../../runtime/polityNames.js";
+import { PLAYER_COUNTRY_CHANGED_EVENT } from "../../runtime/playerCountry.js";
 import { generateActionSuggestions, refinePlayerAction } from "../AI/gameplay.js";
 import { revertUnitOrder } from "../Map/unitsController.js";
 import {
@@ -77,8 +78,9 @@ const SpinnerRing = ({ size = 14, tone = "rgba(255,255,255,0.88)" }) => {
 const saveActions = async (actions) => writeActionsState(actions);
 const loadActions = async () => readActionsState();
 
-const createManualAction = (input) =>
+const createManualAction = (input, country) =>
 normalizeActionEntry({
+    country,
     kind: "action",
     rawInput: input,
     source: "manual",
@@ -87,9 +89,10 @@ normalizeActionEntry({
     title: input,
 });
 
-const normalizeSuggestionAction = (action) =>
+const normalizeSuggestionAction = (action, country) =>
 normalizeActionEntry({
     ...action,
+    country,
     source: "suggested",
     status: "planned",
 });
@@ -127,6 +130,11 @@ const ActionItem = ({ action, onDelete }) => {
         {showTitle && (
             <div style={{ color: "rgba(255,255,255,0.95)", fontSize: "0.78rem", fontWeight: 700, marginBottom: "0.15rem" }}>
             {normalized.title}
+            </div>
+        )}
+        {normalized.country && (
+            <div style={{ color: "rgba(191,219,254,0.7)", fontSize: "0.7rem", marginBottom: "0.18rem" }}>
+            Issued by {normalized.country}
             </div>
         )}
         <div style={{ color: "rgba(255,255,255,0.82)", fontSize: "0.82rem", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
@@ -237,6 +245,22 @@ const ActionsPanel = ({ isOpen, onClose, onOpenAdvisor }) => {
     const [isSuggesting, setIsSuggesting] = React.useState(false);
     const inputRef = React.useRef(null);
     const lastRoundRef = React.useRef(null);
+    const countryRef = React.useRef("your nation");
+    const draftsByCountryRef = React.useRef({});
+
+    const selectCountry = React.useCallback((nextCountry) => {
+        const normalized = String(nextCountry ?? "").trim();
+        if (!normalized || normalized === countryRef.current) return;
+        setInputValue((currentDraft) => {
+            draftsByCountryRef.current[countryRef.current] = currentDraft;
+            return draftsByCountryRef.current[normalized] || "";
+        });
+        countryRef.current = normalized;
+        setCountry(normalized);
+        setSuggestions([]);
+        setQueuedSuggestionIds(new Set());
+        setHasRequestedSuggestions(false);
+    }, []);
 
     React.useEffect(() => {
         if (!isOpen) {
@@ -262,7 +286,7 @@ const ActionsPanel = ({ isOpen, onClose, onOpenAdvisor }) => {
                 }
 
                 if (data.country) {
-                    setCountry(data.country);
+                    selectCountry(data.country);
                 }
 
                 if (data.gameDate) {
@@ -287,12 +311,17 @@ const ActionsPanel = ({ isOpen, onClose, onOpenAdvisor }) => {
 
         fetchGameData();
         const interval = setInterval(fetchGameData, 5000);
+        const handleCountryChanged = (event) => {
+            if (event.detail?.country) selectCountry(event.detail.country);
+        };
+        window.addEventListener(PLAYER_COUNTRY_CHANGED_EVENT, handleCountryChanged);
 
         return () => {
             cancelled = true;
             clearInterval(interval);
+            window.removeEventListener(PLAYER_COUNTRY_CHANGED_EVENT, handleCountryChanged);
         };
-    }, [isOpen]);
+    }, [isOpen, selectCountry]);
 
     const persistActions = async (nextActions) => {
         setActions(nextActions);
@@ -320,7 +349,7 @@ const ActionsPanel = ({ isOpen, onClose, onOpenAdvisor }) => {
             return;
         }
 
-        const nextAction = createManualAction(trimmed);
+        const nextAction = createManualAction(trimmed, country);
         if (!nextAction) {
             return;
         }
@@ -370,7 +399,7 @@ const ActionsPanel = ({ isOpen, onClose, onOpenAdvisor }) => {
     };
 
     const handleQueueSuggestion = async (action) => {
-        const queuedAction = normalizeSuggestionAction(action);
+        const queuedAction = normalizeSuggestionAction(action, country);
         if (!queuedAction) {
             // Malformed AI suggestion — say so instead of doing nothing.
             console.warn("[actions] suggestion could not be queued (no usable text):", action);

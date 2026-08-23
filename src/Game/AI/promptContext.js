@@ -102,12 +102,18 @@ export const buildCampaignHistoryText = (events, world, { limit = 24 } = {}) => 
   buildEventHistoryText(events, { limit, world }),
 ].join("\n");
 
+const chatParticipantNames = (chat) => Array.from(new Set([
+  ...(chat.countries ?? []).map((country) => country.name),
+  ...(chat.controlledCountries ?? []),
+  ...(chat.messages ?? []).map((message) => message.speaker),
+].map((name) => normalizeString(name)).filter(Boolean)));
+
 export const buildChatSummaryText = (chats, { limit = 4 } = {}) => {
   const normalizedChats = normalizeChats(chats);
   if (normalizedChats.length === 0) return "No diplomatic chats are currently recorded.";
 
   return normalizedChats.slice(0, limit).map((chat) => {
-    const participants = chat.countries.map((country) => country.name).join(", ");
+    const participants = chatParticipantNames(chat).join(", ");
     const lastMessage = chat.messages.at(-1);
     return `- ${participants}: ${lastMessage ? `${lastMessage.speaker || lastMessage.role}: ${lastMessage.text}` : "no messages yet"}`;
   }).join("\n");
@@ -118,7 +124,7 @@ export const buildDetailedChatHistoryText = (chats, { limit = 8, messageLimit = 
   if (normalizedChats.length === 0) return "No chats occurred in these rounds.";
 
   return normalizedChats.slice(0, limit).map((chat, index) => {
-    const header = `Chat ${index + 1}: ${chat.countries.map((country) => country.name).join(", ")}`;
+    const header = `Chat ${index + 1}: ${chatParticipantNames(chat).join(", ")}`;
     const body = chat.messages.length > 0
       ? chat.messages.slice(-messageLimit).map((message) => `${message.speaker || message.role}: ${message.text}`).join("\n")
       : "No messages yet.";
@@ -152,7 +158,8 @@ export const buildActionHistoryText = (actions, { includeResolved = false, limit
   const renderAction = (action) => {
     const kindLabel = action.kind === "chat" ? "chat" : "action";
     const statusLabel = action.status !== "planned" ? ` [${action.status}]` : "";
-    return `- (${kindLabel}) ${action.title}${statusLabel}: ${buildActionDisplayText(action)}`;
+    const actorLabel = action.country ? ` [Issued by ${action.country}]` : "";
+    return `- (${kindLabel})${actorLabel} ${action.title}${statusLabel}: ${buildActionDisplayText(action)}`;
   };
 
   if (!includeResolved) {
@@ -183,7 +190,9 @@ export const formatActionsForPrompt = (actions) => normalizeArray(actions)
   .map((entry) => {
     if (typeof entry === "string") return entry.trim();
     const normalized = normalizeActionEntry(entry);
-    return normalized ? `- ${normalized.title}: ${buildActionDisplayText(normalized)}` : "";
+    return normalized
+      ? `- ${normalized.country ? `[Issued by ${normalized.country}] ` : ""}${normalized.title}: ${buildActionDisplayText(normalized)}`
+      : "";
   })
   .filter(Boolean)
   .join("\n");
@@ -257,7 +266,7 @@ let _stockCityCatalogCache = null;
 
 // Same resolution the editor's city importer uses: the seed rides the content
 // node on web builds and same-origin /assets locally.
-const CITY_SEED_URL = `${(import.meta.env.VITE_OH_PMTILES_URL || "/assets").replace(/\/$/, "")}/cities-seed.json`;
+const CITY_SEED_URL = `${(import.meta.env?.VITE_OH_PMTILES_URL || "/assets").replace(/\/$/, "")}/cities-seed.json`;
 
 const formatCityLine = (name, country, lat, lng, extra = "") =>
   `- ${name}${country ? ` (${country})` : ""}: lat ${Number(lat).toFixed(2)}, lng ${Number(lng).toFixed(2)}${extra}`;
@@ -476,6 +485,18 @@ export const buildPromptContext = async (bundle, {
   const unconsolidatedChats = normalizeChats(bundle.chats)
     .filter((entry) => !consolidatedChatIds.has(entry.id));
   const currentChat = normalizedChat ?? unconsolidatedChats[0] ?? null;
+  const controlledPolities = new Set([normalizeString(bundle.game.country)].filter(Boolean));
+  for (const action of normalizeActions(bundle.actions)) {
+    if (action.country) controlledPolities.add(action.country);
+  }
+  for (const savedChat of unconsolidatedChats) {
+    for (const country of savedChat.controlledCountries ?? []) {
+      if (country) controlledPolities.add(country);
+    }
+    for (const message of savedChat.messages ?? []) {
+      if (message.role === "user" && message.speaker) controlledPolities.add(message.speaker);
+    }
+  }
 
   return {
     actionInput,
@@ -498,6 +519,7 @@ export const buildPromptContext = async (bundle, {
     chatSummary: buildChatSummaryText(unconsolidatedChats),
     chatsToConsolidate: chatsToConsolidate || buildDetailedChatHistoryText(unconsolidatedChats, { limit: 12, messageLimit: 50 }),
     consolidatedHistory: buildConsolidatedHistoryText(bundle.world),
+    controlledPolities: Array.from(controlledPolities).join(", "),
     date,
     dateReadable: formatDateReadable(date),
     difficulty: bundle.game.difficulty || "standard",
