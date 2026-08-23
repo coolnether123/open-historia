@@ -1,5 +1,6 @@
 /*! Open Historia — React error boundary (recoverable render-crash fallback) © 2026 Nicholas Krol, MIT (see src/Editor/LICENSE). */
 import React from "react";
+import { clearStaleChunkReload, reloadForStaleChunk } from "./chunkLoadRecovery.js";
 
 // Catches render/lifecycle/constructor throws in the map, game UI and panels so a
 // crash shows a recoverable fallback (with a Reload) instead of React unmounting the
@@ -20,9 +21,11 @@ class ErrorBoundary extends React.Component {
 
   componentDidCatch(error, info) {
     console.error("Render crash caught by ErrorBoundary:", error, info?.componentStack);
+    reloadForStaleChunk(error);
   }
 
   handleReload = () => {
+    clearStaleChunkReload();
     window.location.reload();
   };
 

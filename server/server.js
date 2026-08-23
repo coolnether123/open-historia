@@ -943,9 +943,23 @@ app.delete("/api/basemaps/:id", (req, res) => {
 const fmgDistDir = path.join(__dirname, "../fmg/dist");
 if (fs.existsSync(fmgDistDir)) app.use("/fmg", express.static(fmgDistDir));
 
-app.use(express.static(distDir));
+app.use(express.static(distDir, {
+  setHeaders(res, filePath) {
+    if (path.basename(filePath) === "index.html") {
+      res.setHeader("Cache-Control", "no-store");
+    }
+  },
+}));
+
+// Do not answer a deleted, content-hashed asset with index.html. A stale page can
+// then recognize the failed dynamic import and reload onto the current build.
+app.get("/assets/*splat", (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.sendStatus(404);
+});
 
 app.get("*splat", (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
   res.sendFile(path.join(distDir, "index.html"));
 });
 
