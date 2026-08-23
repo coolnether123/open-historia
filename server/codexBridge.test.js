@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   buildCodexArgs,
+  buildCodexOutputSchema,
   buildCodexPrompt,
   compactCodexSchema,
   normalizeCodexTier,
   normalizeReasoningEffort,
   parseCodexJsonl,
+  stripNullObjectFields,
 } from "./codexBridge.js";
 
 test("Codex tiers and reasoning defaults favor the lowest-token option", () => {
@@ -55,6 +57,14 @@ test("Codex JSONL parser extracts the final response and token usage", () => {
   });
 });
 
+test("Codex JSONL parser surfaces the API failure instead of stderr noise", () => {
+  const output = [
+    JSON.stringify({ type: "error", message: JSON.stringify({ error: { message: "Invalid schema. Missing 'code'." } }) }),
+    JSON.stringify({ type: "turn.failed", error: { message: "Invalid schema. Missing 'code'." } }),
+  ].join("\n");
+  assert.equal(parseCodexJsonl(output).error, "Invalid schema. Missing 'code'.");
+});
+
 test("Codex schema compaction keeps constraints while dropping deep repeated prose", () => {
   const schema = {
     type: "object",
@@ -80,4 +90,43 @@ test("Codex schema compaction keeps constraints while dropping deep repeated pro
   assert.equal(compacted.required[0], "a");
   assert.equal(compacted.properties.a.properties.b.properties.c.properties.d.type, "string");
   assert.equal(compacted.properties.a.properties.b.properties.c.properties.d.description, undefined);
+});
+
+test("Codex output schemas make optional object fields required and nullable", () => {
+  const schema = buildCodexOutputSchema({
+    type: "object",
+    properties: {
+      country: {
+        type: "object",
+        properties: {
+          code: { type: "string" },
+          name: { type: "string" },
+        },
+        required: ["name"],
+      },
+      note: { type: "string" },
+    },
+    required: ["country"],
+  });
+
+  assert.deepEqual(schema.required, ["country", "note"]);
+  assert.deepEqual(schema.properties.country.required, ["code", "name"]);
+  assert.equal(schema.properties.country.additionalProperties, false);
+  assert.equal(schema.properties.country.properties.name.type, "string");
+  assert.deepEqual(schema.properties.country.properties.code.anyOf.at(-1), { type: "null" });
+  assert.deepEqual(schema.properties.note.anyOf.at(-1), { type: "null" });
+});
+
+test("Codex null placeholders are removed before gameplay validation", () => {
+  assert.deepEqual(
+    stripNullObjectFields({
+      catalyst: null,
+      event: { id: null, title: "A new event" },
+      countries: [{ code: null, name: "France" }],
+    }),
+    {
+      event: { title: "A new event" },
+      countries: [{ name: "France" }],
+    },
+  );
 });

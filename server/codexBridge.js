@@ -123,9 +123,84 @@ export function compactCodexSchema(value, depth = 0) {
   );
 }
 
+const schemaAllowsNull = (schema) => {
+  if (!schema || typeof schema !== "object") return false;
+  if (schema.type === "null") return true;
+  if (Array.isArray(schema.type) && schema.type.includes("null")) return true;
+  return [schema.anyOf, schema.oneOf].some((variants) => (
+    Array.isArray(variants) && variants.some((variant) => schemaAllowsNull(variant))
+  ));
+};
+
+const nullableSchema = (schema) => (
+  schemaAllowsNull(schema) ? schema : { anyOf: [schema, { type: "null" }] }
+);
+
+// Strict Structured Outputs require every key in an object's `properties` map
+// to appear in `required`. The game's schemas deliberately use omitted keys for
+// optional effects, so make those fields required-but-nullable at the Codex
+// boundary. stripNullObjectFields restores the game's original shape afterward.
+export function buildCodexOutputSchema(value) {
+  const visit = (schema) => {
+    if (Array.isArray(schema)) return schema.map(visit);
+    if (!schema || typeof schema !== "object") return schema;
+
+    const output = Object.fromEntries(
+      Object.entries(schema).map(([key, entry]) => [key, visit(entry)]),
+    );
+    const properties = schema.properties && typeof schema.properties === "object"
+      ? schema.properties
+      : null;
+    if (properties) {
+      const originallyRequired = new Set(Array.isArray(schema.required) ? schema.required : []);
+      output.properties = Object.fromEntries(
+        Object.entries(properties).map(([key, propertySchema]) => {
+          const transformed = visit(propertySchema);
+          return [key, originallyRequired.has(key) ? transformed : nullableSchema(transformed)];
+        }),
+      );
+      output.required = Object.keys(properties);
+      output.additionalProperties = false;
+    }
+    return output;
+  };
+
+  return visit(compactCodexSchema(value));
+}
+
+export function stripNullObjectFields(value) {
+  if (Array.isArray(value)) return value.map(stripNullObjectFields);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, entry]) => entry !== null)
+      .map(([key, entry]) => [key, stripNullObjectFields(entry)]),
+  );
+}
+
+const unwrapCodexError = (value) => {
+  let current = value;
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (current && typeof current === "object") {
+      current = current.error?.message ?? current.message ?? current.error ?? current;
+      continue;
+    }
+    if (typeof current !== "string") break;
+    const trimmed = current.trim();
+    if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return trimmed;
+    try {
+      current = JSON.parse(trimmed);
+    } catch {
+      return trimmed;
+    }
+  }
+  return typeof current === "string" ? current.trim() : "";
+};
+
 export function parseCodexJsonl(stdout) {
   let text = "";
   let usage = null;
+  let error = "";
   for (const line of String(stdout || "").split(/\r?\n/)) {
     if (!line.trim()) continue;
     let event;
@@ -138,8 +213,11 @@ export function parseCodexJsonl(stdout) {
       text = String(event.item.text ?? "");
     }
     if (event.type === "turn.completed" && event.usage) usage = event.usage;
+    if (event.type === "error" || event.type === "turn.failed") {
+      error = unwrapCodexError(event.error ?? event.message) || error;
+    }
   }
-  return { text, usage };
+  return { text, usage, ...(error ? { error } : {}) };
 }
 
 function codexBinary() {
@@ -172,7 +250,9 @@ function runCodexProcess(args, input = "", { signal } = {}) {
       if (signal?.aborted) {
         reject(signal.reason ?? new Error("Codex request cancelled."));
       } else if (code !== 0) {
-        reject(new Error(stderr.trim() || `Codex exited with code ${code}.`));
+        const parsed = parseCodexJsonl(stdout);
+        const detail = parsed.error || stderr.trim() || "No diagnostic was returned.";
+        reject(new Error(`Codex exited with code ${code}: ${detail}`));
       } else {
         resolve({ stdout, stderr });
       }
@@ -183,7 +263,7 @@ function runCodexProcess(args, input = "", { signal } = {}) {
 
 function schemaFile(runtimeDir, schema) {
   if (!schema || typeof schema !== "object") return "";
-  const serialized = JSON.stringify(compactCodexSchema(schema));
+  const serialized = JSON.stringify(buildCodexOutputSchema(schema));
   const hash = crypto.createHash("sha256").update(serialized).digest("hex");
   const schemaDir = path.join(runtimeDir, "schemas");
   const target = path.join(schemaDir, `${hash}.json`);
@@ -251,13 +331,13 @@ export async function runCodexGameTask({
     const args = buildCodexArgs({ model, reasoningEffort: effort, runtimeDir, schemaPath });
     const result = await runCodexProcess(args, prompt, { signal });
     const parsed = parseCodexJsonl(result.stdout);
-    if (!parsed.text) throw new Error("Codex completed without a game response.");
+    if (!parsed.text) throw new Error(parsed.error || "Codex completed without a game response.");
     addUsage(parsed.usage);
 
     let structuredOutput = null;
     if (structured) {
       try {
-        structuredOutput = JSON.parse(parsed.text);
+        structuredOutput = stripNullObjectFields(JSON.parse(parsed.text));
       } catch {
         throw new Error("Codex returned invalid structured game output.");
       }

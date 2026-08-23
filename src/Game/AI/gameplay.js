@@ -408,6 +408,7 @@ const buildTemplateVariables = async (bundle, options = {}) => {
 const ACTIONS_REFERENCE = "[Actions You Can Take]\nThis is the full menu of levers you have to change the world. Everything you change rides on an event's \"impacts\" object, except the two whole-jump levers noted at the end. Reach for the RIGHT lever, and NEVER narrate a change in an event's text without also emitting the impact that makes it real — narration and world state must always agree.\n\n• regionTransfers — Move a region to a new owner. This is the most important lever and the one most often forgotten: use it for every conquest, cession, sale, liberation, annexation, or hand-over, one entry per region. Shape: {\"regionId\":\"<exact id, or the plain region name if you don't know the id>\",\"regionName\":\"\",\"fromCode\":\"\",\"toCode\":\"<new owner code>\"}. An event whose text says land changed hands but that carries no regionTransfers is invalid output and silently breaks the map. Transfer in order of proximity to the attacker's territory; never hand over an isolated region ringed by enemy land without a naval or airborne reason.\n\n• polityChanges — Create, rename, recolor, or re-describe a polity. One entry can do any combination: {\"code\":\"<polity code>\",\"name\":\"<new name, only if it changed>\",\"color\":\"#RRGGBB (only if it changed)\",\"aliases\":[\"...\"],\"reputation\":0-100,\"tags\":[\"...\"],\"stats\":{...},\"note\":\"<why>\"}. Create a polity by giving a new code with a name and color. Change name/color ONLY on a regime change (never for a mere new leader). On an ideological or alignment shift, rewrite the COMPLETE tags list (it is a full replacement, not a delta). Set reputation (0 = pariah, 100 = universally trusted) only when this turn's events actually moved a polity's standing. A country's national statistics move ONLY through \"stats\" here — send just the fields that changed; everything omitted keeps its prior value. That includes WHO LEADS: when a leader is overthrown, assassinated, dies, resigns or is voted out, put the successor's name in stats.leader (together with stats.government and stats.stability when those moved too). An event that narrates a leader falling but leaves stats.leader untouched leaves the OLD name standing on that country's stat sheet, so the story and the sheet disagree.\n\n• unitOps — Move the war on the map with battalions. Four ops:\n    {\"op\":\"spawn\",\"unit\":{\"name\":\"\",\"type\":\"infantry|armor|air|naval|artillery|garrison\",\"ownerCode\":\"\",\"strength\":1-1000,\"lng\":0,\"lat\":0,\"regionId\":\"\"}}\n    {\"op\":\"move\",\"unitId\":\"<existing id>\",\"toLng\":0,\"toLat\":0,\"regionId\":\"\",\"note\":\"\"}\n    {\"op\":\"strength\",\"unitId\":\"<existing id>\",\"strength\":0-1000,\"note\":\"\"}\n    {\"op\":\"remove\",\"unitId\":\"<existing id>\",\"note\":\"\"}\n  Spawn units for mobilizations and reinforcements, move them to reflect offensives, lower their strength as they take losses, and remove them only when destroyed or disbanded. Only reference unit ids that appear in the current-units list. When a front is decisively won, pair the advance with a regionTransfers entry so the border follows the troops.\n\n• markerOps — Place, remove, or rename a named structure or city. Three ops:\n    {\"op\":\"build\",\"marker\":{\"name\":\"\",\"kind\":\"<lowercase, e.g. military base / port / embassy / airfield / city>\",\"ownerCode\":\"\",\"lng\":0,\"lat\":0,\"note\":\"\",\"foundedAt\":\"\"}}\n    {\"op\":\"remove\",\"name\":\"<exact existing name>\",\"note\":\"\"}\n    {\"op\":\"rename\",\"name\":\"<current name>\",\"newName\":\"<new name>\",\"note\":\"<why>\"}\n  Emit build whenever an event founds or constructs a place, remove when one is destroyed, and rename when a city or structure is renamed (rename works on existing map cities too — a city renamed after a leader or ideology, a capital re-designated, a conquered city given the conqueror's name). Structures NEVER move borders: a facility one polity builds inside another's land does not transfer the region, and ownerCode is who runs the facility, not who owns the ground.\n\n• createdChats — Have another polity open a diplomatic chat with the player BECAUSE of this event (a war scare prompting mediation, a border incident prompting an ultimatum, a windfall prompting a trade delegation). Shape: {\"countries\":[\"...\"],\"title\":\"<names the purpose>\",\"speaker\":\"<the initiating polity — never the player>\",\"openingMessage\":\"<that leader's first message, in their voice>\"}. The other side always speaks first; a blank or untitled chat is invalid.\n\n• actionIds — List the ids of the player's queued actions that this event resolves, so the game can clear them from the queue.\n\nWhole-jump levers (top level of your output, NOT inside an event):\n• diplomaticOutreach — Polities reaching out to the player on their OWN initiative this period — treaty feelers, trade proposals, non-aggression pacts, mediation offers, warnings, summit invitations — not tied to any single event. Same shape as createdChats. Open one whenever a polity plausibly would, rather than defaulting to none.\n• catalyst — An interactive branching scene handed to the player when a moment genuinely demands their decision, or null when none is warranted. Shape: {\"title\":\"\",\"premise\":\"\",\"opening\":\"\",\"choices\":[\"...\", \"...\", up to 5 distinct]}.\n\nKeep the total across createdChats and diplomaticOutreach to at most 3 per jump, and only when the approach genuinely serves the sender's interests.";
 
 const runJsonTask = async (taskKey, {
+  allowFallback = true,
   fallback,
   signal,
   timeoutMs = getMapSetting(MAP_SETTING_KEYS.limitAiGeneration) ? 120000 : 0,
@@ -462,6 +463,10 @@ const runJsonTask = async (taskKey, {
     // re-narrated under each new turn's date) that a de-dup can't catch. Appended at
     // call time so existing frozen-prompt campaigns get it too.
     systemPrompt = `${systemPrompt}\n\n[New Developments Only]\nThe events shown to you above have ALREADY happened and appear only as context. Do NOT restate, rephrase, re-report, or re-narrate them. Emit ONLY genuinely NEW developments that occur during THIS period. If an ongoing situation (a war, a crisis, an occupation) has no new development this period, do not emit an event for it.`;
+    // A live one-day check produced a title claiming an election had happened
+    // while its description only described the campaign. Keep every event's
+    // headline, body, and date on the same factual footing.
+    systemPrompt = `${systemPrompt}\n\n[Event Coherence]\nEach event title must state exactly the development described in that event's body, at the stage it has actually reached on the event date. Never use a completed-outcome title for a pending process (for example, do not title an event \"X elects a president\" when the body only says campaigning continues). Every described development must occur within this jump's origin-to-target window; do not pull a known future result backward into an earlier date.`;
     // Place renaming: appended at call time so existing frozen-prompt campaigns get it
     // too; the markerOps rename op ships via the LIVE tool schema either way.
     systemPrompt = `${systemPrompt}\n\n[Place Renaming]\nYou may rename places when the story warrants it (a city renamed after a leader or ideology, a capital re-designated, a colonial name replaced, a conquered city given the conqueror's name). Emit an impacts.markerOps entry {"op":"rename","name":"<current name>","newName":"<new name>","note":"<why>"}. This works on structures you built AND on existing map cities. Do it sparingly and only when a real event motivates it.`;
@@ -628,7 +633,7 @@ const runJsonTask = async (taskKey, {
       : new DOMException("Timeline jump cancelled.", "AbortError");
   }
 
-  if (typeof fallback !== "function") {
+  if (!allowFallback || typeof fallback !== "function") {
     throw new Error(`AI task "${taskKey}" failed: ${failureReason}`);
   }
 
@@ -1333,97 +1338,6 @@ export const validateGeneratedWorldChanges = async (candidate, world, { strictTr
   }
 
   return "";
-};
-
-const fallbackJumpSimulation = async ({ bundle, days, mode, targetDate }) => {
-  const plannedActions = normalizeActions(bundle.actions).filter((action) => action.status === "planned");
-  const firstThreeActions = plannedActions.slice(0, 3);
-  const events = [];
-
-  // Ancient/FMG scenarios may use textual or BCE dates. Only perform calendar
-  // arithmetic on strict Gregorian dates; otherwise preserve the scenario text.
-  const advanceGameDate = (dayCount) =>
-    addIsoDays(bundle.game.gameDate, dayCount) || normalizeString(bundle.game.gameDate);
-
-  if (firstThreeActions.length > 0) {
-    firstThreeActions.forEach((action, index) => {
-      const eventDate = advanceGameDate(
-        Math.max(1, Math.round(((index + 1) / (firstThreeActions.length + 1)) * Math.max(days, 1))),
-      );
-
-      events.push({
-        date: eventDate,
-        description:
-          action.kind === "chat"
-            ? `${bundle.game.country} opens a deliberate diplomatic channel tied to ${action.title.toLowerCase()}, forcing counterparts to weigh terms instead of guessing intent.`
-            : `${bundle.game.country} begins implementing ${action.title.toLowerCase()}, producing immediate administrative and political consequences that other powers start to notice.`,
-        impacts: {
-          createdChats:
-            action.kind === "chat" && action.invitees.length > 0 && action.chatStarter
-              ? [
-                  {
-                    countries: action.invitees,
-                    openingMessage: action.chatStarter,
-                    speaker: bundle.game.country,
-                    title: action.title,
-                  },
-                ]
-              : [],
-          polityChanges: [],
-          regionTransfers: [],
-        },
-        importance: index === firstThreeActions.length - 1 ? "major" : "minor",
-        kind: action.kind === "chat" ? "diplomacy" : "player",
-        notable: index === firstThreeActions.length - 1,
-        playerRelated: true,
-        title:
-          action.kind === "chat"
-            ? `${bundle.game.country} opens a diplomatic channel`
-            : `${bundle.game.country} acts on ${action.title.toLowerCase()}`,
-      });
-    });
-  } else {
-    const midpoint = advanceGameDate(Math.max(1, Math.round(Math.max(days, 1) / 2)));
-    events.push({
-      date: midpoint,
-      description: `Foreign ministries and general staffs keep adjusting to the current balance of power while ${bundle.game.country} gathers its next move.`,
-      impacts: {
-        createdChats: [],
-        polityChanges: [],
-        regionTransfers: [],
-      },
-      importance: mode === "auto" ? "major" : "minor",
-      kind: "world",
-      notable: mode === "auto",
-      playerRelated: false,
-      title: "The international balance remains in motion",
-    });
-  }
-
-  const lastEvent = events.at(-1) ?? null;
-  const catalyst = lastEvent
-    ? {
-        choices: [
-          "Press the advantage immediately",
-          "Probe cautiously before committing",
-          "Hold position and gather more intelligence",
-        ],
-        opening: `${lastEvent.title}. ${lastEvent.description}`,
-        premise: `This scene begins as ${lastEvent.title.toLowerCase()} reaches the point where direct judgment matters.`,
-        title: lastEvent.title,
-      }
-    : null;
-
-  return {
-    catalyst,
-    clearActions: true,
-    events,
-    stopDate: targetDate,
-    summary:
-      plannedActions.length > 0
-        ? `${bundle.game.country} moves from planning into execution, and the world begins adjusting to the turn's most concrete orders.`
-        : `Time advances without a direct order from ${bundle.game.country}, but the wider system keeps shifting and building pressure.`,
-  };
 };
 
 const normalizeGeneratedEvent = (entry, index = 0) => {
@@ -2149,14 +2063,15 @@ export const simulateTimelineJump = async ({ days, mode = "jump", signal } = {})
     maxEvents = Math.max(maxEvents, minEvents + 3);
   }
   const { generation, payload } = await runJsonTask(mode === "auto" ? "autoJumpForward" : "jumpForward", {
-    fallback: () => fallbackJumpSimulation({ bundle, days: dateStep || 1, mode, targetDate }),
+    // A fabricated fallback turn can advance the save while hiding a broken AI
+    // request. Timeline jumps are transactional: either Codex returns a valid
+    // simulation or the player sees the error and the campaign stays unchanged.
+    allowFallback: false,
     signal,
     // The jump IS the game — by default generation waits as long as the model
-    // needs (0 disables the deadline in runJsonTask), so the canned fallback is
-    // only reachable through a real error, never a slow local/reasoning model.
-    // The "Limit AI generation" toggle opts back into a 5-minute bound for
-    // players who prefer a guaranteed turn over a guaranteed answer (Cancel
-    // works either way).
+    // needs (0 disables the deadline in runJsonTask). The "Limit AI generation"
+    // toggle opts into a five-minute bound; either way, a failure leaves the
+    // campaign unchanged and Cancel remains available.
     timeoutMs: getMapSetting(MAP_SETTING_KEYS.limitAiGeneration) ? 300000 : 0,
     userMessage:
       mode === "auto"
