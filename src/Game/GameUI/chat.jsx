@@ -16,6 +16,7 @@ import { readChatsState, writeChatsState } from "../../runtime/gameState.js";
 import { formatGameDate } from "../../runtime/gameDate.js";
 import { getProviderSettings, getStoredProvider } from "../AI/providerConfig.js";
 import { PLAYER_COUNTRY_CHANGED_EVENT } from "../../runtime/playerCountry.js";
+import { chatBelongsToCountry } from "../../runtime/chatVisibility.js";
 
 // ── Storage ───────────────────────────────────────────────────────────────────
 
@@ -913,7 +914,11 @@ const ChatPanel = ({ isOpen, onClose, requestedCountry, onConsumeRequest }) => {
     const [composerEvent, setComposerEvent]       = useState(null);
     const [replyStates, setReplyStates]           = useState({});
     const [hasLoadedInitialData, setHasLoadedInitialData] = useState(false);
-    const openChats = chats.filter((chat) => chat.status !== "closed" && chatCounterparts(chat, playerCountry).length > 0);
+    const openChats = chats.filter((chat) => (
+        chat.status !== "closed"
+        && chatBelongsToCountry(chat, playerCountry)
+        && chatCounterparts(chat, playerCountry).length > 0
+    ));
 
     // Which chats to flag as unread, snapshotted when the panel OPENS and held
     // until it closes — rows must not reshuffle under the cursor while the player
@@ -928,7 +933,7 @@ const ChatPanel = ({ isOpen, onClose, requestedCountry, onConsumeRequest }) => {
         setUnreadIds(new Set(openChats.filter((chat) => isChatUnread(chat, readSeen())).map((chat) => String(chat.id))));
         // Everything on screen now counts as seen: the toolbar badge clears, and the
         // next open only flags what arrived in between.
-        writeSeen(seenTotals(openChats));
+        writeSeen({ ...(readSeen() || {}), ...seenTotals(openChats) });
     }, [isOpen, hasLoadedInitialData, openChats]);
 
     // Unread first, everything else in the order it already had — a stable
@@ -984,8 +989,10 @@ const ChatPanel = ({ isOpen, onClose, requestedCountry, onConsumeRequest }) => {
         const handleCountryChanged = (event) => {
             const country = event.detail?.country;
             if (!country) return;
+            snapshotTakenRef.current = false;
+            setUnreadIds(new Set());
             setPlayerCountry(country);
-            setActiveChat((active) => active && chatCounterparts(active, country).length === 0 ? null : active);
+            setActiveChat((active) => active && !chatBelongsToCountry(active, country) ? null : active);
         };
         window.addEventListener(PLAYER_COUNTRY_CHANGED_EVENT, handleCountryChanged);
         return () => {
@@ -1107,7 +1114,8 @@ const ChatPanel = ({ isOpen, onClose, requestedCountry, onConsumeRequest }) => {
         setChats(prev => {
             const existing = prev.find((chat) => {
                 const counterparts = chatCounterparts(chat, playerCountry);
-                return chat.status !== "closed" && counterparts.length === 1
+                return chat.status !== "closed" && chatBelongsToCountry(chat, playerCountry)
+                    && counterparts.length === 1
                     && counterparts[0].name.toLowerCase() === country.name.toLowerCase();
             });
             if (existing) { setActiveChat(existing); return prev; }
@@ -1167,12 +1175,30 @@ const ChatPanel = ({ isOpen, onClose, requestedCountry, onConsumeRequest }) => {
 const Chat = ({ hovered, setHovered, isOpen, onToggle }) => {
     const [hasOpened, setHasOpened] = useState(false);
     const [pendingCountry, setPendingCountry] = useState(null);
+    const [playerCountry, setPlayerCountry] = useState("");
     const [unseenCount, setUnseenCount] = useState(0);
     const setChatOpen = () => { onToggle(); };
 
     useEffect(() => {
         if (isOpen) setHasOpened(true);
     }, [isOpen]);
+
+    useEffect(() => {
+        let cancelled = false;
+        readJson(JSON_URLS.game, { defaultValue: {}, force: true })
+            .then((game) => {
+                if (!cancelled && game.country) setPlayerCountry(game.country);
+            })
+            .catch(() => {});
+        const handleCountryChanged = (event) => {
+            if (event.detail?.country) setPlayerCountry(event.detail.country);
+        };
+        window.addEventListener(PLAYER_COUNTRY_CHANGED_EVENT, handleCountryChanged);
+        return () => {
+            cancelled = true;
+            window.removeEventListener(PLAYER_COUNTRY_CHANGED_EVENT, handleCountryChanged);
+        };
+    }, []);
 
     // Unread badge: countries now message the player unprompted (jump
     // invitations, the idle outreach drip), so the toolbar button must say so.
@@ -1183,7 +1209,12 @@ const Chat = ({ hovered, setHovered, isOpen, onToggle }) => {
         const check = () => loadAllChats({ force: true })
         .then((saved) => {
             if (cancelled || !Array.isArray(saved)) return;
-            const open = saved.filter((c) => c.status !== "closed" && Array.isArray(c.countries) && c.countries.length > 0);
+            const open = saved.filter((c) => (
+                c.status !== "closed"
+                && Array.isArray(c.countries)
+                && c.countries.length > 0
+                && chatBelongsToCountry(c, playerCountry)
+            ));
             // The badge only READS the baseline. The panel writes it when it opens,
             // and it must be the only writer: if this poll also wrote on isOpen it
             // could clear the baseline first and the list would find nothing unread.
@@ -1206,7 +1237,7 @@ const Chat = ({ hovered, setHovered, isOpen, onToggle }) => {
             cancelled = true;
             clearInterval(iv);
         };
-    }, [isOpen]);
+    }, [isOpen, playerCountry]);
 
     useEffect(() => {
         const handler = (country) => {

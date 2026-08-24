@@ -43,6 +43,7 @@ import {
 } from "../../runtime/gameState.js";
 import { dedupeGeneratedEvents } from "../../runtime/eventDedup.js";
 import { difficultyDirective } from "../../runtime/difficulty.js";
+import { chatBelongsToCountry } from "../../runtime/chatVisibility.js";
 import { MAP_SETTING_KEYS, getMapSetting } from "../../runtime/mapSettings.js";
 import {
   advanceNarrativeSystems,
@@ -2366,6 +2367,7 @@ export const maybeSendIdleDiplomacy = async ({ chance = IDLE_DIPLOMACY_CHANCE } 
     const single = built.countries.length === 1 ? regionKey(built.countries[0].name) : "";
     const existing = single
       ? chats.find((chat) => chat.status !== "closed"
+          && chatBelongsToCountry(chat, bundle.game.country)
           && Array.isArray(chat.countries)
           && chat.countries.length === 1
           && regionKey(chat.countries[0]?.name) === single)

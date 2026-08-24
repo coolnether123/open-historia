@@ -39,6 +39,42 @@ test("timeline schemas require explicit country associations", () => {
   }).valid, true);
 });
 
+test("event outreach requires a message from the country that initiated it", () => {
+  const event = {
+    countries: [{ name: "Germany" }, { name: "United Kingdom" }],
+    date: "2016-01-11",
+    description: "Germany gives notice that it will leave NATO.",
+    impacts: {
+      createdChats: [{
+        countries: [{ name: "United Kingdom" }],
+        speaker: "United Kingdom",
+        title: "London requests urgent talks",
+      }],
+    },
+    title: "Germany announces its NATO withdrawal",
+  };
+  const payload = {
+    clearActions: true,
+    events: [event],
+    stopDate: "2016-01-12",
+    summary: "Germany begins the withdrawal process.",
+  };
+
+  assert.equal(validateGameplayPayload("jumpForward", payload).valid, false);
+  assert.equal(validateGameplayPayload("jumpForward", {
+    ...payload,
+    events: [{
+      ...event,
+      impacts: {
+        createdChats: [{
+          ...event.impacts.createdChats[0],
+          openingMessage: "Your notice raises immediate security questions. London requests urgent consultations.",
+        }],
+      },
+    }],
+  }).valid, true);
+});
+
 test("linked event metadata survives chat storage and reaches the diplomatic model", () => {
   const [chat] = normalizeChats([{
     countries: [{ code: "FRA", name: "France" }],
